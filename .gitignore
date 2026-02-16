@@ -1,0 +1,5 @@
+site/
+venv/
+python/__pycache__
+concept_registry.md
+ontology_registry.md
