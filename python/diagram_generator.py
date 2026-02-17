@@ -28,6 +28,10 @@ def get_target_info(g: Graph, expr, cls_name: str, ns: str, prefix_map: dict) ->
         is_complex = True
         return target_id, is_complex, None, target_qname, reflexive, expr
 
+
+
+
+
 def add_class_expression_node(graph, g: Graph, expr, ns: str, prefix_map: dict, global_all_classes: set, ns_to_ontology: dict, abstract_map: dict, created: set, is_superclass: bool = False, in_associated_cluster: bool = False, enum_members: list = None, enum_name: str = None) -> tuple:
     """Recursively add nodes for class expressions, returning (node_id, label)."""
     if isinstance(expr, URIRef):
@@ -38,7 +42,7 @@ def add_class_expression_node(graph, g: Graph, expr, ns: str, prefix_map: dict, 
         created.add(node_id)
         local = qname.split(":")[-1]
         target_ont = get_ontology_for_uri(str(expr), ns_to_ontology)
-        url = None if ':' in qname else f"../_counters/{target_ont}__{local}.md" if qname in global_all_classes else None
+        url = None if ':' in qname else f"../{local}.md" if qname in global_all_classes else None  # changed
         label = qname
         graph.node(
             node_id,
@@ -104,7 +108,7 @@ def generate_diagram(g: Graph, cls: URIRef, cls_name: str, cls_id: str, ns: str,
     if not os.path.exists(diagrams_dir):
         os.makedirs(diagrams_dir)
         log.info(f"Created diagrams directory: {diagrams_dir}")
-    cls_filename = f"{ontology_name}__{cls_name}"
+    cls_filename = cls_name  # changed
 
     # Initialize Digraph with ODM-like styling
     dot = Digraph(
@@ -119,10 +123,24 @@ def generate_diagram(g: Graph, cls: URIRef, cls_name: str, cls_id: str, ns: str,
     # Track combined properties to merge restrictions
     combined = defaultdict(dict)
 
-    # Add main class node with datatype properties
+    # Collect superclasses URIs
+    super_uris = set()
+    associated_uris = set()
+    for sup in g.objects(cls, RDFS.subClassOf):
+        if isinstance(sup, URIRef) and sup != OWL.Thing:
+            super_uris.add(sup)
+        elif (sup, RDF.type, OWL.Class) in g and g.value(sup, OWL.unionOf):
+            # Handle anonymous superclasses like unions
+            members = collect_list(g, g.value(sup, OWL.unionOf))
+            for m in members:
+                if isinstance(m, URIRef):
+                    super_uris.add(m)
+
+    # Add main class node with datatype properties as attributes
     with dot.subgraph() as main_group:
         main_group.attr(rank='max')
         data_props = defaultdict(list)
+        attr_rows = ""
         for restriction in g.objects(cls, RDFS.subClassOf):
             if (restriction, RDF.type, OWL.Restriction) in g:
                 prop = g.value(restriction, OWL.onProperty)
@@ -136,101 +154,53 @@ def generate_diagram(g: Graph, cls: URIRef, cls_name: str, cls_id: str, ns: str,
                     stereotype = "refined" if is_refined_property(g, cls, base_prop, restriction) else ""
                     if is_inverse:
                         stereotype += ", inverse" if stereotype else "inverse"
+                    label_parts = []  # Add this initialization
+                    target_expr = None  # For consistency, though not used for datatypes
                     all_values_from = g.value(restriction, OWL.allValuesFrom)
                     if all_values_from:
+                        label_parts.append("only")
+                        # For datatypes, allValuesFrom is the datatype restriction
                         range_name = get_class_expression_str(g, all_values_from, ns, prefix_map)
-                        restrictions.append("only")
-                    on_data_range = g.value(restriction, OWL.onDataRange)
-                    qualified_card = g.value(restriction, OWL.qualifiedCardinality)
-                    min_qualified_card = g.value(restriction, OWL.minQualifiedCardinality)
-                    max_qualified_card = g.value(restriction, OWL.maxQualifiedCardinality)
-                    if qualified_card:
-                        restrictions.append(f"exactly {qualified_card}")
-                    if min_qualified_card:
-                        restrictions.append(f"min {min_qualified_card}")
-                    if max_qualified_card:
-                        restrictions.append(f"max {max_qualified_card}")
-                    if on_data_range:
-                        range_name = get_class_expression_str(g, on_data_range, ns, prefix_map)
+                    some_values_from = g.value(restriction, OWL.someValuesFrom)
+                    if some_values_from:
+                        label_parts.append("some")
+                        range_name = get_class_expression_str(g, some_values_from, ns, prefix_map)
                     card = g.value(restriction, OWL.cardinality)
                     min_card = g.value(restriction, OWL.minCardinality)
                     max_card = g.value(restriction, OWL.maxCardinality)
+                    qualified_card = g.value(restriction, OWL.qualifiedCardinality)
+                    min_qualified_card = g.value(restriction, OWL.minQualifiedCardinality)
+                    max_qualified_card = g.value(restriction, OWL.maxQualifiedCardinality)
                     if card:
-                        restrictions.append(f"exactly {card}")
+                        label_parts.append(f"exactly {card}")
                     if min_card:
-                        restrictions.append(f"min {min_card}")
+                        label_parts.append(f"min {min_card}")
                     if max_card:
-                        restrictions.append(f"max {max_card}")
-                    restriction_str = f"«{', '.join(restrictions)}»" if restrictions else ""
-                    data_props[prop_name].append((restriction_str, range_name, stereotype))
-                    log.debug("Added datatype property %s: %s «%s»", prop_name, range_name, stereotype)
+                        label_parts.append(f"max {max_card}")
+                    if qualified_card:
+                        label_parts.append(f"exactly {qualified_card}")
+                    if min_qualified_card:
+                        label_parts.append(f"min {min_qualified_card}")
+                    if max_qualified_card:
+                        label_parts.append(f"max {max_qualified_card}")
+                    # Build restriction string
+                    constr = " ".join(label_parts) if label_parts else ""
+                    if constr:
+                        constr = f"«{constr}» "
+                    attr_str = f"{constr}{prop_name}: {range_name}"
+                    if stereotype:
+                        attr_str = f"«{stereotype}» {attr_str}"
+                    restrictions.append(attr_str)
+                    data_props[prop_name].extend(restrictions)  # Or however you collect them
+                    attr_rows += f'<TR><TD ALIGN="LEFT">{attr_str}</TD></TR>'
 
-        attributes = []
-        for prop_name, restrictions in sorted(data_props.items()):
-            all_restrictions = []
-            range_names = set()
-            stereotypes = set()
-            for restriction_str, range_name, stereotype in restrictions:
-                if restriction_str:
-                    all_restrictions.append(restriction_str)
-                range_names.add(range_name)
-                if stereotype:
-                    stereotypes.add(stereotype)
-            range_name = range_names.pop() if range_names else "string"
-            restriction_label = ", ".join(sorted(set(r.strip('«»') for r in all_restrictions))) if all_restrictions else ""
-            stereotype_label = ", ".join(sorted(set(s for s in stereotypes))) if stereotypes else ""
-            attribute = f"{prop_name}: {range_name}"
-            if restriction_label or stereotype_label:
-                labels = [l for l in [restriction_label, stereotype_label] if l]
-                attribute = f"{attribute} «{', '.join(labels)}»"
-            attributes.append(attribute)
-
-        attributes_html = "".join(f'<TR><TD ALIGN="LEFT">{prop}</TD></TR>' for prop in attributes)
-        main_label = f'<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="1"><TR><TD BGCOLOR="lightgray" ALIGN="CENTER" PORT="e">{cls_name}</TD></TR>{attributes_html}</TABLE>>'
-        main_group.node(
-            cls_id,
-            main_label,
-            URL=f"../classes/{ontology_name}__{cls_name}.md" if cls_name in global_all_classes else None,
-            margin="0"
-        )
-        log.debug("Added main class node %s: %s", cls_id, cls_name)
-
-    # Add superclasses (direct superclasses via rdfs:subClassOf)
-    super_uris = set()
-    for super_cls in g.objects(cls, RDFS.subClassOf):
-        if isinstance(super_cls, URIRef) and super_cls != OWL.Thing:
-            super_uris.add(super_cls)
-    superclasses = {get_qname(g, u, ns, prefix_map) for u in super_uris}
-    created = set()
-    for sup_uri in sorted(super_uris, key=lambda u: get_qname(g, u, ns, prefix_map).lower()):
-        sup_id, _ = add_class_expression_node(dot, g, sup_uri, ns, prefix_map, global_all_classes, ns_to_ontology, abstract_map, created, is_superclass=True)
-        log.debug("Added superclass node %s", sup_id)
-
-    # Collect associated classes for object properties
-    associated_uris = set()
-    for restriction in g.objects(cls, RDFS.subClassOf):
-        if (restriction, RDF.type, OWL.Restriction) in g:
-            prop = g.value(restriction, OWL.onProperty)
-            if prop and (prop, RDF.type, OWL.ObjectProperty) in g:
-                for target_expr in [g.value(restriction, p) for p in (OWL.onClass, OWL.allValuesFrom, OWL.someValuesFrom) if g.value(restriction, p)]:
-                    leaf_classes = get_leaf_classes(g, target_expr, ns, prefix_map)
-                    for leaf in leaf_classes:
-                        if isinstance(leaf, URIRef):
-                            leaf_qname = get_qname(g, leaf, ns, prefix_map)
-                            if leaf_qname != cls_name and leaf_qname not in superclasses:
-                                associated_uris.add(leaf)
-                                log.debug("Added associated URI: %s", leaf_qname)
-
-    # Create associated cluster and add nodes
-    assoc_nodes = []
-    created_complex = set()
-    with dot.subgraph(name='cluster_associated') as associated_cluster:
-        associated_cluster.attr(style='invis', label='')
-        associated_cluster.node('Invis', label='<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="1"><TR><TD></TD></TR></TABLE>>', style='invis', margin="0")
-        for assoc_uri in sorted(associated_uris, key=lambda u: get_qname(g, u, ns, prefix_map).lower()):
-            assoc_id, _ = add_class_expression_node(associated_cluster, g, assoc_uri, ns, prefix_map, global_all_classes, ns_to_ontology, abstract_map, created_complex, is_superclass=False, in_associated_cluster=True)
-            assoc_nodes.append(assoc_id)
-            log.debug("Added associated node %s", assoc_id)
+        # Build main class label with attributes if any
+        label = f'<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="1"><TR><TD BGCOLOR="lightgray" ALIGN="CENTER" PORT="e">{cls_name}</TD></TR>'
+        if attr_rows:
+            label += '<HR/>' + attr_rows
+        label += '</TABLE>>'
+        url = f"../{cls_name}.md"
+        main_group.node(cls_id, label=label, URL=url, margin="0")  # Changed margin to string
 
     # Process object properties
     for restriction in g.objects(cls, RDFS.subClassOf):
@@ -242,7 +212,7 @@ def generate_diagram(g: Graph, cls: URIRef, cls_name: str, cls_id: str, ns: str,
             if base_prop and (base_prop, RDF.type, OWL.ObjectProperty) in g:
                 is_refined = is_refined_property(g, cls, base_prop, restriction)
                 style = "dashed" if is_refined else "solid"
-                label_parts = []
+                label_parts = []  # Initialize here
                 target_expr = None
                 reflexive = False
 
@@ -284,6 +254,16 @@ def generate_diagram(g: Graph, cls: URIRef, cls_name: str, cls_id: str, ns: str,
                     target_expr = OWL.Thing
 
                 if target_expr and label_parts:
+                    # Collect associated URIs from target
+                    if isinstance(target_expr, URIRef):
+                        associated_uris.add(target_expr)
+                    else:
+                        # For complex expressions, add leaf URIs
+                        leaves = get_leaf_classes(g, target_expr, ns, prefix_map)
+                        for leaf in leaves:
+                            if isinstance(leaf, URIRef):
+                                associated_uris.add(leaf)
+
                     # Check for oneOf enumeration
                     oneOf_members = collect_oneOf(g, target_expr)
                     enum_name = None
@@ -308,7 +288,23 @@ def generate_diagram(g: Graph, cls: URIRef, cls_name: str, cls_id: str, ns: str,
                     combined[key]['style'] = "dashed" if is_refined else combined[key]['style']
                     log.debug("Added object property %s -> %s: %s, style=%s, reflexive=%s", prop_name, target_qname, label_parts, style, reflexive)
 
+    # Remove self and supers from associated
+    associated_uris -= {cls}
+    associated_uris -= super_uris
+
+    # Add associated nodes
+    assoc_nodes = []
+    created_complex = set()
+    with dot.subgraph(name='cluster_associated') as associated_cluster:
+        associated_cluster.attr(style='invis', label='')
+        associated_cluster.node('Invis', label='<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="1"><TR><TD></TD></TR></TABLE>>', style='invis', margin="0")
+        for assoc_uri in sorted(associated_uris, key=lambda u: get_qname(g, u, ns, prefix_map).lower()):
+            assoc_id, _ = add_class_expression_node(associated_cluster, g, assoc_uri, ns, prefix_map, global_all_classes, ns_to_ontology, abstract_map, created_complex, is_superclass=False, in_associated_cluster=True)
+            assoc_nodes.append(assoc_id)
+            log.debug("Added associated node %s", assoc_id)
+
     # Add edges for superclasses
+    created = set()
     for sup_uri in sorted(super_uris, key=lambda u: get_qname(g, u, ns, prefix_map).lower()):
         sup_id, _ = add_class_expression_node(dot, g, sup_uri, ns, prefix_map, global_all_classes, ns_to_ontology, abstract_map, created, is_superclass=True)
         dot.edge(cls_id, sup_id, arrowhead="onormal", style="solid")

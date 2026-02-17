@@ -62,46 +62,49 @@ def get_qname(g: Graph, uri, ns: str, prefix_map: dict):
         return "INVALID_URI"
     s = str(uri)
     norm = _norm_base(s)
-#    log.debug("Processing URI: %s, normalized: %s, namespace: %s", s, norm, ns)
+    # log.debug("Processing URI: %s, normalized: %s, namespace: %s", s, norm, ns)
+
+    # 1. Local namespace (no prefix)
     if norm == _norm_base(ns) or s.startswith(ns):
         local = s[len(_norm_base(ns)):]
         if local.startswith(('/', '#', '_')):
             local = local[1:]
         qname = local.rstrip()
-#        log.debug("Matched default namespace, returning QName: %s", qname)
+        # log.debug("Matched default namespace, returning QName: %s", qname)
         return qname
+
+    # 2. External prefixes (match longest URI first)
     if not prefix_map:
         log.warning("Empty prefix map for URI: %s, namespace: %s", s, ns)
         return s
-    for base in sorted(prefix_map.keys(), key=len, reverse=True):
-        base_norm = _norm_base(base)
-#        log.debug("Checking prefix base: %s, normalized: %s", base, base_norm)
-        if s == base or s.startswith(base) or norm == base_norm or norm.startswith(base_norm):
-            local = s[len(base):]
+
+    for prefix, uri_base in sorted(prefix_map.items(), key=lambda x: len(x[1]), reverse=True):
+        uri_norm = _norm_base(uri_base)
+        # log.debug("Checking prefix %s → %s", prefix, uri_base)
+        if s == uri_base or s.startswith(uri_base) or norm == uri_norm or norm.startswith(uri_norm):
+            local = s[len(uri_base):]
             if local.startswith(('/', '#', '_')):
                 local = local[1:]
             local = local.rstrip()
             if not local:
-#                log.debug("No local part after prefix %s, using base URI", base)
                 local = s
-            if prefix_map[base] == ":":
-                qname = local
-            else:
-                qname = prefix_map[base] + ":" + local
+            qname = local if prefix == "" else f"{prefix}:{local}"
             return qname
+
+    # Fallback
     if not s.startswith('N'):
         log.warning("No prefix found for URI: %s, namespace: %s, prefix_map:", s, ns)
-        for prefix in prefix_map:
-            log.info("  %s, %s", str(prefix), prefix == ns)
+        for p, u in prefix_map.items():
+            log.info("  %s → %s", p, u)
     return s
 
 def get_label(g: Graph, c: URIRef) -> str:
     if c is None:
         log.error("Invalid class URI provided to get_label: None")
         return "INVALID_CLASS"
-    for _, _, lbl in g.triples((c, RDFS.label, None)):
-        if isinstance(lbl, Literal):
-            return str(lbl)
+#    for _, _, lbl in g.triples((c, RDFS.label, None)):
+#        if isinstance(lbl, Literal):
+#            return str(lbl)
     fragment_start = max(c.rfind('#'), c.rfind('/')) + 1
     return c[fragment_start:]
 

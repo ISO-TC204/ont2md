@@ -45,6 +45,9 @@ def parse_concept_registry(script_dir):
     log.debug(f"Loaded {len(registry)} entries from concept_registry.md")
     return registry
 
+
+
+
 def process_ontology(owl_path: str, errors: list, ontology_info) -> tuple:
     """Process an OWL file and update ontology_info, return graph, namespace, prefix map, classes, local_classes, and property map."""
     # Load OWL ontology
@@ -65,32 +68,22 @@ def process_ontology(owl_path: str, errors: list, ontology_info) -> tuple:
 
         # Replace invalid xml: prefixes with xmlns:
         content = content.replace(' xml:', ' xmlns:')
-
-        # Remove leading colon in relative URIs for rdf:about and rdf:resource
         content = content.replace('rdf:about=":', 'rdf:about="')
         content = content.replace('rdf:resource=":', 'rdf:resource="')
 
-        g = Graph()
-        if owl_path.lower().endswith('.ttl'):
-            g.parse(data=content, format='turtle', base=xml_base)
-            log.info("Loaded ontology %s with Turtle format, %d triples", owl_path, len(g))
-        else:
-            try:
-                g.parse(data=content, format='xml', base=xml_base)
-                log.debug("Loaded ontology %s with RDF/XML, %d triples", owl_path, len(g))
-            except Exception as xml_e:
-                try:
-                    from owlready2 import get_ontology, default_world
-                    onto = get_ontology("file://" + os.path.abspath(owl_path)).load()
-                    if onto is None:
-                        raise ValueError("owlready2 returned None")
-                    g = default_world.as_rdflib_graph()
-                    log.info("Loaded ontology %s with owlready2 fallback, %d triples", owl_path, len(g))
-                except Exception as owl_e:
-                    error_msg = f"Failed RDF/XML: {str(xml_e)}\n{traceback.format_exc()}\nFailed owlready2: {str(owl_e)}\n{traceback.format_exc()}"
-                    errors.append(error_msg)
-                    log.error(error_msg)
-                    return None, None, None, None, None, None
+        # Always use owlready2 to handle imports
+        try:
+            from owlready2 import get_ontology, default_world
+            onto = get_ontology("file://" + os.path.abspath(owl_path)).load()
+            if onto is None:
+                raise ValueError("owlready2 returned None")
+            g = default_world.as_rdflib_graph()
+            log.info("Loaded ontology %s with owlready2, %d triples", owl_path, len(g))
+        except Exception as owl_e:
+            error_msg = f"Failed owlready2: {str(owl_e)}\n{traceback.format_exc()}"
+            errors.append(error_msg)
+            log.error(error_msg)
+            return None, None, None, None, None, None
         if len(g) == 0:
             error_msg = f"RDF graph is empty after loading ontology {owl_path}"
             errors.append(error_msg)
@@ -121,6 +114,11 @@ def process_ontology(owl_path: str, errors: list, ontology_info) -> tuple:
     if not ns:
         log.warning("No ontology IRI found in OWL file %s; using default namespace", owl_path)
         ns = "https://isotc204.org/ontologies/its/default#"
+
+
+
+
+
 
     # Normalize unexpanded or relative URIs in the graph
     to_fix = []

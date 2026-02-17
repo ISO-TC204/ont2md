@@ -1,3 +1,4 @@
+# markdown_generator.py
 import os
 import logging
 import yaml
@@ -62,131 +63,109 @@ def get_used_by(g: Graph, cls: URIRef, global_all_classes: set, ns: str, prefix_
     log.debug(f"Used by for {cls}: {used_by}")
     return sorted(used_by, key=lambda x: x[0].lower())
 
-def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_patterns: dict, global_all_classes: set, ns: str, file_path: str, errors: list, prefix_map: dict, prop_map: dict, ontology_name: str, ns_to_ontology: dict, class_to_onts: dict):
+def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_patterns: dict, global_all_classes: set, ns: str, docs_dir: str, errors: list, prefix_map: dict, prop_map: dict, ontology_name: str, ns_to_ontology: dict, class_to_onts: dict):
     """Generate Markdown file for a class, including all superclasses and disjoint statements in Formalization."""
-    classes_dir = os.path.join(os.path.dirname(file_path), "classes")
-    filename = os.path.join(classes_dir, f"{ontology_name}__{cls_name}.md")
+    filename = os.path.join(docs_dir, f"{cls_name}.md")
     
     log.debug(f"Writing {filename} for class {cls_name} ({cls})")
     
-    # Check if this is a pattern class
-    is_pattern = cls_name in global_patterns
-
-    if is_pattern:
-        # Pattern class Markdown
-        title = f"# {insert_spaces(cls_name)}\n\n"
-        desc = get_first_literal(g, cls, [DCTERMS.description]) or ""
-        top_desc = f"{desc}\n\n" if desc else ""
-        members_md = "It consists of the following classes:\n\n"
-        member_tuples = global_patterns[cls_name]["classes"]
-        for mem_cls, mem_ont in sorted(member_tuples, key=lambda x: x[0].lower()):
-            if mem_cls == 'ITSThing':
-                continue
-            display_mem = insert_spaces(mem_cls)
-            if len(class_to_onts[mem_cls]) > 1:
-                display_mem += f" ({mem_ont})"
-            members_md += f"- [{display_mem}]({mem_ont}__{mem_cls}.md)\n"
-        content = title + top_desc + members_md
+    title = f"# {cls_name}\n\n"
+    desc = get_first_literal(g, cls, [DCTERMS.description]) or ""
+    top_desc = f"{desc}\n\n" if desc else ""
+    note = get_first_literal(g, cls, [SKOS.note]) or ""
+    note_md = f"NOTE: {note}\n\n" if note else ""
+    example = get_first_literal(g, cls, [SKOS.example]) or ""
+    example_md = f"EXAMPLE: {example}\n\n" if example else ""
+    diagram_line = f"![{cls_name} Diagram](diagrams/{cls_name}.dot.svg)\n\n<a href=\"diagrams/{cls_name}.dot.svg\">Open interactive {cls_name} diagram</a>\n\n"  # changed path
+    
+    # Specializations section
+    specializations = get_specializations(g, cls, global_all_classes, ns, prefix_map, ns_to_ontology)
+    specializations_md = ""
+    if specializations:
+        specializations_md += f"## Specializations of {cls_name}\n\n"
+        specializations_md += "| Class | Description |\n"
+        specializations_md += "|-------|-------------|\n"
+        for spec_cls, spec_desc, spec_ont in specializations:
+            display_spec = insert_spaces(spec_cls)
+            if len(class_to_onts[spec_cls]) > 1:
+                display_spec += f" ({spec_ont})"
+            link = f"{spec_cls}.md"  # changed
+            specializations_md += f"| [{display_spec}]({link}) | {spec_desc} |\n"
+        specializations_md += "\n"
     else:
-        # Non-pattern class Markdown
-        title = f"# {cls_name}\n\n"
-        desc = get_first_literal(g, cls, [DCTERMS.description]) or ""
-        top_desc = f"{desc}\n\n" if desc else ""
-        note = get_first_literal(g, cls, [SKOS.note]) or ""
-        note_md = f"NOTE: {note}\n\n" if note else ""
-        example = get_first_literal(g, cls, [SKOS.example]) or ""
-        example_md = f"EXAMPLE: {example}\n\n" if example else ""
-        diagram_line = f"![{cls_name} Diagram](../diagrams/{ontology_name}__{cls_name}.dot.svg)\n\n<a href=\"../../diagrams/{ontology_name}__{cls_name}.dot.svg\">Open interactive {cls_name} diagram</a>\n\n"
-        
-        # Specializations section
-        specializations = get_specializations(g, cls, global_all_classes, ns, prefix_map, ns_to_ontology)
-        specializations_md = ""
-        if specializations:
-            specializations_md += f"## Specializations of {cls_name}\n\n"
-            specializations_md += "| Class | Description |\n"
-            specializations_md += "|-------|-------------|\n"
-            for spec_cls, spec_desc, spec_ont in specializations:
-                display_spec = insert_spaces(spec_cls)
-                if len(class_to_onts[spec_cls]) > 1:
-                    display_spec += f" ({spec_ont})"
-                link = f"{spec_ont}__{spec_cls}.md"
-                specializations_md += f"| [{display_spec}]({link}) | {spec_desc} |\n"
-            specializations_md += "\n"
-        else:
-            log.debug(f"No specializations found for {cls_name}")
-        
-        # Formalization section with superclasses and disjoints
-        restr_rows = class_restrictions(g, cls, ns, prefix_map)
-        # Collect direct superclasses
-        superclasses = []
-        for super_cls in g.objects(cls, RDFS.subClassOf):
-            if isinstance(super_cls, URIRef) and super_cls != OWL.Thing:
-                super_name = get_qname(g, super_cls, ns, prefix_map)
-                superclasses.append(("subClassOf", super_name))
-        # Collect disjoint classes
-        disjoints = []
-        for disjoint_cls in g.objects(cls, OWL.disjointWith):
-            if isinstance(disjoint_cls, URIRef):
-                disjoint_name = get_qname(g, disjoint_cls, ns, prefix_map)
-                disjoints.append(("disjointWith", disjoint_name))
-        # Combine with restrictions from class_restrictions
-        formalization_rows = sorted(restr_rows + superclasses + disjoints, key=lambda x: x[0].lower())
-        formalization_md = ""
-        if formalization_rows:
-            formalization_md += f"## Formalization for {cls_name}\n\n"
-            formalization_md += "| Property | Constraint |\n"
-            formalization_md += "|----------|------------|\n"
-            for prop, constr in formalization_rows:
-                log.debug(f"Restriction for {cls_name}: ({prop}, '{constr}')")
-                formalization_md += f"| {prop} | {constr} |\n"
-            formalization_md += "\n"
-        
-        # Used by section
-        used_by = get_used_by(g, cls, global_all_classes, ns, prefix_map, ns_to_ontology)
-        used_by_md = ""
-        if used_by:
-            used_by_md += f"## Used by classes\n\n"
-            used_by_md += "| Class | Property |\n"
-            used_by_md += "|-------|----------|\n"
-            for used_cls, used_prop, used_ont in used_by:
-                display_used = insert_spaces(used_cls)
-                if len(class_to_onts[used_cls]) > 1:
-                    display_used += f" ({used_ont})"
-                link = f"{used_ont}__{used_cls}.md"
-                used_by_md += f"| [{display_used}]({link}) | {used_prop} |\n"
-            used_by_md += "\n"
-        
-        # Other annotations
-        other_annot_md = ""
-        annotations = list(iter_annotations(g, cls, ns, prefix_map))
-        if annotations:
-            other_annot_md += "## Other annotations\n\n"
-            other_annot_md += "| Annotation | Value |\n"
-            other_annot_md += "|------------|-------|\n"
-            for pred, val in sorted(annotations):
-                other_annot_md += f"| {pred} | {val} |\n"
-            other_annot_md += "\n"
-        
-        content = title + top_desc + note_md + example_md + diagram_line + specializations_md + formalization_md + used_by_md + other_annot_md
+        log.debug(f"No specializations found for {cls_name}")
+    
+    # Formalization section with superclasses and disjoints
+    restr_rows = class_restrictions(g, cls, ns, prefix_map)
+    # Collect direct superclasses
+    superclasses = []
+    for super_cls in g.objects(cls, RDFS.subClassOf):
+        if isinstance(super_cls, URIRef) and super_cls != OWL.Thing:
+            super_name = get_qname(g, super_cls, ns, prefix_map)
+            superclasses.append(("subClassOf", super_name))
+    # Collect disjoint classes
+    disjoints = []
+    for disjoint_cls in g.objects(cls, OWL.disjointWith):
+        if isinstance(disjoint_cls, URIRef):
+            disjoint_name = get_qname(g, disjoint_cls, ns, prefix_map)
+            disjoints.append(("disjointWith", disjoint_name))
+    # Combine with restrictions from class_restrictions
+    formalization_rows = sorted(restr_rows + superclasses + disjoints, key=lambda x: x[0].lower())
+    formalization_md = ""
+    if formalization_rows:
+        formalization_md += f"## Formalization for {cls_name}\n\n"
+        formalization_md += "| Property | Constraint |\n"
+        formalization_md += "|----------|------------|\n"
+        for prop, constr in formalization_rows:
+            log.debug(f"Restriction for {cls_name}: ({prop}, '{constr}')")
+            formalization_md += f"| {prop} | {constr} |\n"
+        formalization_md += "\n"
+    
+    # Used by section
+    used_by = get_used_by(g, cls, global_all_classes, ns, prefix_map, ns_to_ontology)
+    used_by_md = ""
+    if used_by:
+        used_by_md += f"## Used by classes\n\n"
+        used_by_md += "| Class | Property |\n"
+        used_by_md += "|-------|----------|\n"
+        for used_cls, used_prop, used_ont in used_by:
+            display_used = insert_spaces(used_cls)
+            if len(class_to_onts[used_cls]) > 1:
+                display_used += f" ({used_ont})"
+            link = f"{used_cls}.md"  # changed
+            used_by_md += f"| [{display_used}]({link}) | {used_prop} |\n"
+        used_by_md += "\n"
+    
+    # Other annotations
+    other_annot_md = ""
+    annotations = list(iter_annotations(g, cls, ns, prefix_map))
+    if annotations:
+        other_annot_md += "## Other annotations\n\n"
+        other_annot_md += "| Property | Value |\n"
+        other_annot_md += "|----------|-------|\n"
+        for pred, val in annotations:
+            other_annot_md += f"| {pred} | {val} |\n"
+        other_annot_md += "\n"
+    
+    content = title + top_desc + note_md + example_md + diagram_line + specializations_md + formalization_md + used_by_md + other_annot_md
 
     # Write Markdown file
     try:
-        os.makedirs(classes_dir, exist_ok=True)
         with open(filename, "w", encoding="utf-8") as f:
             f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
             f.write(content)
-        log.debug("Generated Markdown file: %s", filename)
+        log.info("Generated Markdown at %s", filename)
     except Exception as e:
-        error_msg = f"Error writing Markdown for {cls_name} from {file_path}: {str(e)}\n{traceback.format_exc()}"
+        error_msg = f"Error writing {filename}: {str(e)}\n{traceback.format_exc()}"
         errors.append(error_msg)
         log.error(error_msg)
         raise
 
 def update_mkdocs_nav(mkdocs_path: str, global_patterns: dict, global_all_classes: set, errors: list, class_to_onts: dict, ontology_info: dict, input_files: list):
-    """Update mkdocs.yml navigation with file > pattern > class or file > class structure."""
+    """Update mkdocs.yml navigation with classes and patterns."""
     try:
         with open(mkdocs_path, 'r', encoding="utf-8") as f:
-            config = yaml.load(f, Loader=SafeMkDocsLoader)
+            config = yaml.safe_load(f)
     except Exception as e:
         error_msg = f"Error reading mkdocs.yml: {str(e)}\n{traceback.format_exc()}"
         errors.append(error_msg)
@@ -194,87 +173,22 @@ def update_mkdocs_nav(mkdocs_path: str, global_patterns: dict, global_all_classe
         raise
 
     new_nav = [{"Home": "index.md"}]
-    
-    if len(input_files) == 1:
-        # Single file case: PatternName > ClassName or ClassName
-        file_path = input_files[0]
-        ontology_name = ontology_info[file_path]["ontology_name"]
-        # Patterns
-        pattern_names = sorted(ontology_info[file_path]["patterns"], key=str.lower)
-        for pat_name in pattern_names:
-            if pat_name == 'ITSThing':
+
+    # Group by pattern (ontology_name)
+    for ont_name in sorted(ontology_info.keys(), key=str.lower):
+        ont = ontology_info[ont_name]
+        display_ont = insert_spaces(ont_name)
+        ont_nav = [{display_ont: f"{ont_name}.md"}]
+        class_names = sorted(ont["classes"], key=str.lower)
+        for cls_name in class_names:
+            if cls_name == 'ITSThing':
                 continue
-            display_pat = insert_spaces(pat_name)
-            if len(class_to_onts[pat_name]) > 1:
-                display_pat += f" ({ontology_name})"
-            sub_nav = []
-            member_tuples = global_patterns.get(pat_name, {"classes": []})["classes"]
-            # Filter members to this ontology
-            member_dict = defaultdict(list)
-            for mem_cls, mem_ont in member_tuples:
-                if mem_ont == ontology_name:
-                    member_dict[mem_cls].append(mem_ont)
-            for mem_cls in sorted(member_dict.keys(), key=str.lower):
-                if mem_cls == 'ITSThing':
-                    continue
-                display_mem = insert_spaces(mem_cls)
-                if len(class_to_onts[mem_cls]) > 1:
-                    display_mem += f" ({ontology_name})"
-                sub_nav.append({display_mem: f"classes/{ontology_name}__{mem_cls}.md"})
-            if sub_nav:  # Only add pattern if it has classes
-                new_nav.append({display_pat: sub_nav})
-        # Non-pattern classes
-        non_pattern_classes = sorted(
-            [cls for cls in ontology_info[file_path]["non_pattern_classes"] if cls not in global_patterns and cls != 'ITSThing'],
-            key=str.lower
-        )
-        for cls_name in non_pattern_classes:
             display_cls = insert_spaces(cls_name)
             if len(class_to_onts[cls_name]) > 1:
-                display_cls += f" ({ontology_name})"
-            new_nav.append({display_cls: f"classes/{ontology_name}__{cls_name}.md"})
-    else:
-        # Multiple files case: FileName > PatternName > ClassName or FileName > ClassName
-        for file_path in sorted(ontology_info.keys(), key=lambda x: ontology_info[x]["title"].lower()):
-            ontology_name = ontology_info[file_path]["ontology_name"]
-            display_ont = ontology_info[file_path]["title"] or ontology_name
-            ont_nav = []
-            # Patterns
-            pattern_names = sorted(ontology_info[file_path]["patterns"], key=str.lower)
-            for pat_name in pattern_names:
-                if pat_name == 'ITSThing':
-                    continue
-                display_pat = insert_spaces(pat_name)
-                if len(class_to_onts[pat_name]) > 1:
-                    display_pat += f" ({ontology_name})"
-                sub_nav = []
-                member_tuples = global_patterns.get(pat_name, {"classes": []})["classes"]
-                # Filter members to this ontology
-                member_dict = defaultdict(list)
-                for mem_cls, mem_ont in member_tuples:
-                    if mem_ont == ontology_name:
-                        member_dict[mem_cls].append(mem_ont)
-                for mem_cls in sorted(member_dict.keys(), key=str.lower):
-                    if mem_cls == 'ITSThing':
-                        continue
-                    display_mem = insert_spaces(mem_cls)
-                    if len(class_to_onts[mem_cls]) > 1:
-                        display_mem += f" ({ontology_name})"
-                    sub_nav.append({display_mem: f"classes/{ontology_name}__{mem_cls}.md"})
-                if sub_nav:  # Only add pattern if it has classes
-                    ont_nav.append({display_pat: sub_nav})
-            # Non-pattern classes
-            non_pattern_classes = sorted(
-                [cls for cls in ontology_info[file_path]["non_pattern_classes"] if cls not in global_patterns and cls != 'ITSThing'],
-                key=str.lower
-            )
-            for cls_name in non_pattern_classes:
-                display_cls = insert_spaces(cls_name)
-                if len(class_to_onts[cls_name]) > 1:
-                    display_cls += f" ({ontology_name})"
-                ont_nav.append({display_cls: f"classes/{ontology_name}__{cls_name}.md"})
-            if ont_nav:  # Only add ontology if it has patterns or classes
-                new_nav.append({display_ont: ont_nav})
+                display_cls += f" ({ont_name})"
+            ont_nav.append({display_cls: f"{cls_name}.md"})  # changed path
+        if ont_nav:
+            new_nav.append({display_ont: ont_nav})
 
     config["nav"] = new_nav
     try:
@@ -286,45 +200,23 @@ def update_mkdocs_nav(mkdocs_path: str, global_patterns: dict, global_all_classe
         log.error(error_msg)
         raise
 
-def generate_index(docs_dir: str, input_files: list, ontology_info: dict, global_patterns: dict, errors: list, class_to_onts: dict):
-    """Generate index.md with one section per ontology/pattern file."""
+def generate_index(docs_dir: str, input_files: list, ontology_info: dict, global_patterns: dict, errors: list, class_to_onts: dict, full_title: str):
+    """Generate index.md with one section per pattern."""
     index_path = os.path.join(docs_dir, "index.md")
-    index_content = "# City Data Model - Foundation Level Concepts\n\n"
+    index_content = f"# {full_title}\n\n"
     index_content += "![Draft for review only](/assets/img/draft_for_review.svg)\n\n"
-
-    for file_path in sorted(input_files, key=lambda x: ontology_info[x]["title"].lower()):
-        if file_path not in ontology_info:
-            continue
-
-        ont = ontology_info[file_path]
-        title = ont["title"]
-        description = ont["description"] or "This pattern specifies foundation-level concepts..."
-        ont_name = ont["ontology_name"]
-        filename = os.path.basename(file_path)
-
-        # Combine patterns + non-pattern classes (both are now "classes in this file")
-        local_class_names = sorted(
-            list(ont["patterns"]) + list(ont["non_pattern_classes"]),
-            key=str.lower
-        )
-
-        index_content += f"## {title}\n\n"
-        index_content += f"{description}\n\n"
-        index_content += "This pattern consists of the following classes:\n\n"
-
-        for cls_name in local_class_names:
-            if cls_name == 'ITSThing':
-                continue
-            display_name = insert_spaces(cls_name)
-            if len(class_to_onts.get(cls_name, [])) > 1:
-                display_name += f" ({ont_name})"
-            index_content += f"- [{display_name}](classes/{ont_name}__{cls_name}.md)\n"
-
-        index_content += f"\nThe formal definition of this pattern is available in "
-        index_content += f"[{os.path.splitext(filename)[1][1:].upper()} Syntax]({filename}).\n\n"
+    index_content += f"The {full_title} ontology consists of the following:\n\n"
+    for ont_name in sorted(ontology_info.keys(), key=str.lower):
+        display = insert_spaces(ont_name)
+        index_content += f"- [{display}]({ont_name}.md)\n"
 
     # Write file
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write(index_content)
-    
-    log.info("Generated updated index.md with per-pattern class lists")
+    try:
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write(index_content)
+        log.info("Generated updated index.md with per-pattern class lists")
+    except Exception as e:
+        error_msg = f"Error writing index.md: {str(e)}\n{traceback.format_exc()}"
+        errors.append(error_msg)
+        log.error(error_msg)
+        raise
