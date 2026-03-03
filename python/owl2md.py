@@ -51,7 +51,7 @@ def generate_pattern_markdown(ont_name: str, ont: dict, docs_dir: str, class_to_
     formal = f"\nThe formal definition of this pattern is available in [{os.path.splitext(filename_owl)[1][1:].upper()} Syntax]({filename_owl}).\n\n"
     content = title + top_desc + imports_md + members_md + formal
     with open(filename, "w", encoding="utf-8") as f:
-        f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
+#        f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
         f.write(content)
     log.info("Generated pattern Markdown at %s", filename)
 
