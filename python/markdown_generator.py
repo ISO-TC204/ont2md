@@ -152,7 +152,7 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_patterns: dic
     # Write Markdown file
     try:
         with open(filename, "w", encoding="utf-8") as f:
-            f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
+#            f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
             f.write(content)
         log.info("Generated Markdown at %s", filename)
     except Exception as e:
@@ -204,7 +204,7 @@ def generate_index(docs_dir: str, input_files: list, ontology_info: dict, global
     """Generate index.md with one section per pattern."""
     index_path = os.path.join(docs_dir, "index.md")
     index_content = f"# {full_title}\n\n"
-    index_content += "![Draft for review only](/assets/img/draft_for_review.svg)\n\n"
+#    index_content += "![Draft for review only](/assets/img/draft_for_review.svg)\n\n"
     index_content += f"The {full_title} ontology consists of the following:\n\n"
     for ont_name in sorted(ontology_info.keys(), key=str.lower):
         display = insert_spaces(ont_name)
