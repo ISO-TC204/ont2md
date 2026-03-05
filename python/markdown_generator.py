@@ -63,7 +63,7 @@ def get_used_by(g: Graph, cls: URIRef, global_all_classes: set, ns: str, prefix_
     log.debug(f"Used by for {cls}: {used_by}")
     return sorted(used_by, key=lambda x: x[0].lower())
 
-def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_patterns: dict, global_all_classes: set, ns: str, docs_dir: str, errors: list, prefix_map: dict, prop_map: dict, ontology_name: str, ns_to_ontology: dict, class_to_onts: dict):
+def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: set, ns: str, docs_dir: str, errors: list, prefix_map: dict, ns_to_ontology: dict, class_to_onts: dict, isDraft: bool):
     """Generate Markdown file for a class, including all superclasses and disjoint statements in Formalization."""
     filename = os.path.join(docs_dir, f"{cls_name}.md")
     
@@ -152,7 +152,8 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_patterns: dic
     # Write Markdown file
     try:
         with open(filename, "w", encoding="utf-8") as f:
-#            f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
+            if isDraft:
+                f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
             f.write(content)
         log.info("Generated Markdown at %s", filename)
     except Exception as e:
@@ -200,11 +201,12 @@ def update_mkdocs_nav(mkdocs_path: str, global_patterns: dict, global_all_classe
         log.error(error_msg)
         raise
 
-def generate_index(docs_dir: str, input_files: list, ontology_info: dict, global_patterns: dict, errors: list, class_to_onts: dict, full_title: str):
+def generate_index(docs_dir: str, ontology_info: dict, errors: list, full_title: str, isDraft: bool):
     """Generate index.md with one section per pattern."""
     index_path = os.path.join(docs_dir, "index.md")
     index_content = f"# {full_title}\n\n"
-#    index_content += "![Draft for review only](/assets/img/draft_for_review.svg)\n\n"
+    if isDraft:
+        index_content += "![Draft for review only](/assets/img/draft_for_review.svg)\n\n"
     index_content += f"The {full_title} ontology consists of the following:\n\n"
     for ont_name in sorted(ontology_info.keys(), key=str.lower):
         display = insert_spaces(ont_name)
