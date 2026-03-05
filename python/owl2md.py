@@ -51,12 +51,15 @@ def generate_pattern_markdown(ont_name: str, ont: dict, docs_dir: str, class_to_
     formal = f"\nThe formal definition of this pattern is available in [{os.path.splitext(filename_owl)[1][1:].upper()} Syntax]({filename_owl}).\n\n"
     content = title + top_desc + imports_md + members_md + formal
     with open(filename, "w", encoding="utf-8") as f:
-#        f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
+        if ontology_info[ont_name].get("draft"):
+            f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
         f.write(content)
     log.info("Generated pattern Markdown at %s", filename)
 
 def main():
     CDM1 = Namespace("https://w3id.org/citydata/part1/v1/")
+    ITS_CORE = Namespace("https://w3id.org/itsdata/core/v1/")
+
     full_title = ""
     log.info("Starting owl2mkdocs.py")
     # Check if script is called without arguments
@@ -140,6 +143,7 @@ def main():
 
         title = get_ontology_metadata(temp_g, ns, DCTERMS.alternative) or get_ontology_metadata(temp_g, ns, DCTERMS.title) or insert_spaces(ontology_name)
         is_main_module = get_ontology_metadata(temp_g, ns, CDM1.mainModule)
+        is_draft = get_ontology_metadata(temp_g, ns, ITS_CORE.draft)
         if is_main_module and is_main_module.lower() == 'true':
             full_title = get_ontology_metadata(temp_g, ns, DCTERMS.title) or get_ontology_metadata(temp_g, ns, DC.title) or title
         log.info("Extracted title for %s: %s", ontology_name, full_title)
@@ -173,12 +177,14 @@ def main():
             import_name = imp_str.rsplit('/', 1)[-1] if '/' in imp_str else imp_str
             imports.append(import_name)
 
+        isDraft = is_draft.lower() == 'true' if is_draft else False
         ontology_info[ontology_name] = {
             "title": title,
             "full_title": full_title,
             "description": desc,
             "classes": local_classes_temp,
-            "imports": imports                   
+            "imports": imports,
+            "draft": isDraft
         }
         ns_to_ontology[ns] = ontology_name
 
@@ -261,7 +267,7 @@ def main():
             generate_diagram(g, cls, cls_name, cls_id, ns, global_all_classes, abstract_map, dummy_path, errors, prefix_map, "", ns_to_ontology)  # empty ontology_name
 
             # Generate Markdown - use empty ontology_name, adjust file_path to docs_dir
-            generate_markdown(g, cls, cls_name, global_patterns, global_all_classes, ns, docs_dir, errors, prefix_map, prop_map, "", ns_to_ontology, class_to_onts)
+            generate_markdown(g, cls, cls_name, global_all_classes, ns, docs_dir, errors, prefix_map, ns_to_ontology, class_to_onts, isDraft)
             processed_count += 1
 
         except Exception as e:
@@ -283,7 +289,7 @@ def main():
 
     # Generate index.md
     try:
-        generate_index(docs_dir, owl_files, ontology_info, global_patterns, errors, class_to_onts, full_title)
+        generate_index(docs_dir, ontology_info, errors, full_title, isDraft)
     except Exception as e:
         error_msg = f"Error generating index.md: {str(e)}\n{traceback.format_exc()}"
         errors.append(error_msg)
