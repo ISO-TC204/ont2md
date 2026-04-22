@@ -5,9 +5,10 @@ import logging
 import traceback
 from typing import Optional, Iterable, Tuple, List
 from rdflib import Graph, RDF, RDFS, OWL, URIRef, Literal, BNode
-from rdflib.namespace import DC, DCTERMS, SKOS
+from rdflib.namespace import DC, DCTERMS, SKOS, SH, VANN
+from collections import defaultdict
 
-log = logging.getLogger("ofn2mkdocs")
+log = logging.getLogger("ttl2mkdocs")
 
 # -------------------- namespaces --------------------
 DESC_PROPS = (DC.description, SKOS.definition, RDFS.comment, DCTERMS.description)
@@ -15,6 +16,12 @@ SKIP_IN_OTHER = set(DESC_PROPS) | {RDFS.label, DCTERMS.description, SKOS.note, S
 
 def _norm_base(u: str) -> str:
     return u.rstrip('/#')
+
+def get_pattern_name(ont_name: str) -> str:
+    return f"{ont_name}-pattern" if ont_name != "core" else "core"
+
+def get_shacl_name(ont_name: str) -> str:
+    return f"{ont_name}-shacl" if ont_name != "core" else "core"
 
 def get_prefix_named_pairs(ontology_doc, ns: str):
     """Return [{'prefix': <str>, 'uri': <str>}, ...] from funowl PrefixDeclarations,
@@ -56,7 +63,10 @@ def get_prefix_named_pairs(ontology_doc, ns: str):
 #    log.debug("Prefixes extracted: %s", out)
     return out
 
-def get_qname(g: Graph, uri, ns: str, prefix_map: dict):
+def get_definition(g: Graph, s: URIRef) -> str:
+    return get_first_literal(g, s, [SKOS.definition]) or get_first_literal(g, s, [DCTERMS.description]) or ""
+
+def get_qname(uri, ns: str, prefix_map: dict):
     if uri is None or not str(uri).strip():
         log.error("Invalid URI provided to get_qname: %s", uri)
         return "INVALID_URI"
@@ -95,7 +105,7 @@ def get_qname(g: Graph, uri, ns: str, prefix_map: dict):
     if not s.startswith('N'):
         log.warning("No prefix found for URI: %s, namespace: %s, prefix_map:", s, ns)
         for p, u in prefix_map.items():
-            log.info("  %s → %s", p, u)
+            log.debug("  %s → %s", p, u)
     return s
 
 def get_label(g: Graph, c: URIRef) -> str:
@@ -130,11 +140,19 @@ def get_ontology_metadata(g: Graph, ns: str, predicate: URIRef) -> Optional[str]
             return str(lit)
     return None
 
+def get_preferred_prefix(g: Graph) -> str | None:
+    """Extract vann:preferredNamespacePrefix from the owl:Ontology node."""
+    
+    for ont in g.subjects(RDF.type, OWL.Ontology):
+        for pref in g.objects(ont, VANN.preferredNamespacePrefix):
+            return str(pref).strip()
+    return ""
+
 def iter_annotations(g: Graph, subj: URIRef, ns: str, prefix_map: dict) -> Iterable[Tuple[str, str]]:
     """Yield (predicate_qname, literal) for annotations on subj, excluding DESC_PROPS and SKIP_IN_OTHER."""
-    for p, o in sorted(g.predicate_objects(subj), key=lambda po: get_qname(g, po[0], ns, prefix_map).lower()):
+    for p, o in sorted(g.predicate_objects(subj), key=lambda po: get_qname(po[0], ns, prefix_map).lower()):
         if isinstance(o, Literal) and p not in SKIP_IN_OTHER:
-            yield get_qname(g, p, ns, prefix_map), str(o)
+            yield get_qname(p, ns, prefix_map), str(o)
 
 def collect_list(g: Graph, node) -> list:
     """Collect RDF list members into a Python list."""
@@ -149,7 +167,7 @@ def collect_list(g: Graph, node) -> list:
 def get_class_expression_str(g: Graph, expr, ns: str, prefix_map: dict) -> str:
     """Convert complex class expression to string representation."""
     if isinstance(expr, URIRef):
-        return get_qname(g, expr, ns, prefix_map)
+        return get_qname(expr, ns, prefix_map)
     if isinstance(expr, BNode):
         union_col = g.value(expr, OWL.unionOf)
         if union_col and union_col != RDF.nil:
@@ -164,9 +182,32 @@ def get_class_expression_str(g: Graph, expr, ns: str, prefix_map: dict) -> str:
             return "not " + get_class_expression_str(g, complement, ns, prefix_map)
         oneOf_members = collect_oneOf(g, expr)
         if oneOf_members:
-            return "Enum: " + ", ".join(sorted(get_qname(g, m, ns, prefix_map) for m in oneOf_members))
+            return "Enum: " + ", ".join(sorted(get_qname(m, ns, prefix_map) for m in oneOf_members))
         return "ComplexExpr"  # Fallback
     return str(expr)
+
+def get_hyperlinked_class_expression(g: Graph, expr, ns: str, prefix_map: dict, global_all_classes: set) -> str:
+    """Convert complex class expression to hyperlinked markdown string."""
+    if isinstance(expr, URIRef):
+        qname = get_qname(expr, ns, prefix_map)
+        return hyperlink_concept(expr, ns, prefix_map, global_all_classes, qname)
+    else:  # BNode
+        union_col = g.value(expr, OWL.unionOf)
+        if union_col and union_col != RDF.nil:
+            members = collect_list(g, union_col)
+            return " or ".join(sorted(get_hyperlinked_class_expression(g, m, ns, prefix_map, global_all_classes) for m in members))
+        inter_col = g.value(expr, OWL.intersectionOf)
+        if inter_col and inter_col != RDF.nil:
+            members = collect_list(g, inter_col)
+            return " and ".join(sorted(get_hyperlinked_class_expression(g, m, ns, prefix_map, global_all_classes) for m in members))
+        complement = g.value(expr, OWL.complementOf)
+        if complement:
+            return "not " + get_hyperlinked_class_expression(g, complement, ns, prefix_map, global_all_classes)
+        oneOf_members = collect_oneOf(g, expr)
+        if oneOf_members:
+            return "Enum: " + ", ".join(sorted(hyperlink_concept(m, ns, prefix_map, global_all_classes, get_qname(m, ns, prefix_map)) for m in oneOf_members))
+        # Fallback
+        return get_class_expression_str(g, expr, ns, prefix_map)
 
 def get_leaf_classes(g: Graph, expr, ns: str, prefix_map: dict) -> list:
     """Recursively get leaf classes from class expressions."""
@@ -189,7 +230,10 @@ def get_leaf_classes(g: Graph, expr, ns: str, prefix_map: dict) -> list:
         elif complement:
             leaves.extend(get_leaf_classes(g, complement, ns, prefix_map))
         elif oneOf_members:
-            leaves.extend(oneOf_members)  # Treat individuals as leaves
+            # Changed based on Copilot suggestion to treat oneOf members as leaves, since they represent individuals in an enumeration
+            #            leaves.extend(oneOf_members)  # Treat individuals as leaves
+            for m in oneOf_members:
+                leaves.extend(get_leaf_classes(g, m, ns, prefix_map))
         else:
             leaves.append(expr)  # Fallback for other BNodes
     return leaves
@@ -202,56 +246,43 @@ def collect_oneOf(g: Graph, node) -> list:
             return collect_list(g, oneOf_col)
     return []
 
-def class_restrictions(g: Graph, cls: URIRef, ns: str, prefix_map: dict) -> list:
-    """Collect restrictions for a class, including inherited refinements."""
+def class_restrictions(g: Graph, cls: URIRef, ns: str, prefix_map: dict, global_all_classes: set) -> List[Tuple[str, str]]:
     rows = []
     for restr in g.objects(cls, RDFS.subClassOf):
         if (restr, RDF.type, OWL.Restriction) in g:
             prop = g.value(restr, OWL.onProperty)
             if prop:
-                prop_name, is_inverse, base_prop = get_property_info(g, prop, ns, prefix_map)
-                is_refined = is_refined_property(g, cls, prop, restr)
-                min_card = g.value(restr, OWL.minQualifiedCardinality) or g.value(restr, OWL.minCardinality)
-                max_card = g.value(restr, OWL.maxQualifiedCardinality) or g.value(restr, OWL.maxCardinality)
-                card = g.value(restr, OWL.qualifiedCardinality) or g.value(restr, OWL.cardinality)
-                all_values_from = g.value(restr, OWL.allValuesFrom)
-                some_values_from = g.value(restr, OWL.someValuesFrom)
+                prop_qname = get_qname(prop, ns, prefix_map)
+                hyper_prop = hyperlink_concept(prop, ns, prefix_map, global_all_classes, prop_qname)
+                constr_parts = []
+                # Cardinality
+                for card_p, card_label in [(OWL.cardinality, 'exactly'), (OWL.minCardinality, 'min'), (OWL.maxCardinality, 'max')]:
+                    card = g.value(restr, card_p)
+                    if card:
+                        constr_parts.append(f"{card_label} {card}")
+                # Qualified cardinality
+                for qcard_p, qcard_label in [(OWL.qualifiedCardinality, 'exactly'), (OWL.minQualifiedCardinality, 'min'), (OWL.maxQualifiedCardinality, 'max')]:
+                    qcard = g.value(restr, qcard_p)
+                    if qcard:
+                        constr_parts.append(f"{qcard_label} {qcard}")
+                # Values from
+                for values_p, values_label in [(OWL.allValuesFrom, 'only'), (OWL.someValuesFrom, 'some')]:
+                    values = g.value(restr, values_p)
+                    if values:
+                        values_str = get_hyperlinked_class_expression(g, values, ns, prefix_map, global_all_classes)
+                        constr_parts.append(f"{values_label} {values_str}")
+                # hasValue
                 has_value = g.value(restr, OWL.hasValue)
-                label_parts = []
-                range_expr = None
-                if all_values_from:
-                    range_expr = all_values_from
-                    label_parts.append("all")
-                if some_values_from:
-                    range_expr = some_values_from
-                    label_parts.append("some")
                 if has_value:
-                    range_expr = has_value
-                    label_parts.append("has")
-                if card:
-                    label_parts.append(f"exactly {card}")
-                if min_card:
-                    label_parts.append(f"min {min_card}")
-                if max_card:
-                    label_parts.append(f"max {max_card}")
-
-                # Handle unqualified cardinality by treating as qualified with owl:Thing
-                if label_parts and not range_expr:
-                    range_expr = OWL.Thing
-
-                if range_expr and label_parts:
-                    range_name = get_class_expression_str(g, range_expr, ns, prefix_map)
-                    rows.append((prop_name, f"{' '.join(label_parts)} {range_name}"))
-            else:
-                rows.append(("", "Unsupported restriction"))
-
+                    if isinstance(has_value, Literal):
+                        constr_parts.append(f"value '{has_value}'")
+                    else:
+                        hv_qname = get_qname(has_value, ns, prefix_map)
+                        hyper_hv = hyperlink_concept(has_value, ns, prefix_map, global_all_classes, hv_qname)
+                        constr_parts.append(f"value {hyper_hv}")
+                if constr_parts:
+                    rows.append((hyper_prop, ' '.join(constr_parts)))
     return rows
-
-def hyperlink_class(name: str, all_classes: set, ns: str):
-    """Create a hyperlink only for classes in the local namespace."""
-    if ':' not in name and name in all_classes:
-        return f"[{name}]({name}.md)"
-    return name
 
 def fmt_title(name: str, all_classes: set, ns: str, abstract_map: dict) -> str:
     """Format class title for Graphviz, with URL attribute for local classes."""
@@ -297,11 +328,11 @@ def get_property_info(g: Graph, prop: URIRef, ns: str, prefix_map: dict) -> tupl
     if inverse_of:
         base_prop = inverse_of
         is_inverse = True
-        prop_name = f"inverse {get_qname(g, base_prop, ns, prefix_map)}"
+        prop_name = f"inverse {get_qname(base_prop, ns, prefix_map)}"
     else:
         base_prop = prop
         is_inverse = False
-        prop_name = get_qname(g, base_prop, ns, prefix_map)
+        prop_name = get_qname(base_prop, ns, prefix_map)
     return prop_name, is_inverse, base_prop
 
 def is_refined_property(g: Graph, cls: URIRef, prop: URIRef, restriction: URIRef) -> bool:
@@ -327,12 +358,39 @@ def is_refined_property(g: Graph, cls: URIRef, prop: URIRef, restriction: URIRef
                         return True
     return False
 
+import re
+
+def prefix_to_uml_namespace(qname: str) -> str:
+    """Convert a QName prefix to a UML-friendly namespace (e.g., 'time:date' → 'time::date')."""
+    if ':' in qname:
+        prefix, local = qname.split(':', 1)
+        return f"{prefix}::{local}"
+    return qname
+
 def insert_spaces(name: str) -> str:
+    """Convert camelCase or hyphenated names to readable Title Case with spaces.
+    
+    Examples:
+        fuzzy-time          → Fuzzy Time
+        fuzzy-time-pattern  → Fuzzy Time Pattern
+        LandUsePattern      → Land Use Pattern
+        ClockTime           → Clock Time
+        ITSThing            → ITS Thing
+    """
     if not name:
         log.error("Invalid name provided to insert_spaces: %s", name)
         return "INVALID_NAME"
-    name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', name)
+
+    # First, replace hyphens with spaces
+    name = name.replace('-', ' ')
+
+    # Then handle camelCase (insert space before uppercase letters)
     name = re.sub(r'([a-z\d])([A-Z])', r'\1 \2', name)
+    name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', name)
+
+    # Convert to Title Case (each word capitalized)
+    name = ' '.join(word.capitalize() for word in name.split())
+
     return name
 
 def get_ontology_for_uri(uri_str: str, ns_to_ontology: dict) -> str:
@@ -341,6 +399,69 @@ def get_ontology_for_uri(uri_str: str, ns_to_ontology: dict) -> str:
         if norm_uri.startswith(_norm_base(ont_ns)):
             return ont_name
     return None
+
+def hyperlink_concept(uri: URIRef, ns: str, prefix_map: dict, global_all_classes: set, qname: str = None) -> str:
+    if not uri:
+        return qname or ""
+    iri = str(uri)
+    if not qname:
+        qname = get_qname(uri, ns, prefix_map)
+    if qname in global_all_classes:
+        url = f"{qname}.md"
+    elif iri.startswith("https://w3id.org/citydata/") or iri.startswith("https://w3id.org/itsdata/"):
+        url = iri
+    else:
+        prefix, local = qname.split(':', 1) if ':' in qname else ('', qname)
+        url = f"https://w3id.org/citydata/imported/{prefix}/{local}"
+    return f"[{qname}]({url})"
+
+def get_url(uri: URIRef, ns: str, prefix_map: dict, global_all_classes: set, withMd: bool = True) -> str:
+    if not uri:
+        return None
+    iri = str(uri)
+    qname = get_qname(uri, ns, prefix_map)
+    if iri.startswith(ns):
+        return f"{qname}.md" if withMd else f"../{qname}"
+    elif iri.startswith("https://w3id.org/citydata/") or iri.startswith("https://w3id.org/itsdata/"):
+        return iri
+    else:
+        prefix, local = qname.split(':', 1) if ':' in qname else ('', qname)
+        return f"https://w3id.org/citydata/imported/{prefix}/latest/{local}"
+
+def parse_concept_registry(script_dir):
+    """Same as in your owl version – kept for consistency."""
+    registry_path = os.path.join(script_dir, "concept_registry.md")
+    if not os.path.exists(registry_path):
+        with open(registry_path, 'w', encoding='utf-8') as f:
+            f.write("| base_uri | name | type | description |\n|----------|------|------|-------------|\n")
+        log.info(f"Created new concept_registry.md in {script_dir}")
+        return {}
+    content = open(registry_path, 'r', encoding='utf-8').read()
+    lines = content.splitlines()
+    registry = {}
+    in_table = False
+    headers = None
+    for line in lines:
+        if line.strip().startswith('|'):
+            if not in_table:
+                headers = [h.strip().lower() for h in line.split('|') if h.strip()]
+                log.debug(f"Parsed headers: {headers}")
+                in_table = True
+            elif headers and not line.strip().startswith('|---'):
+                values = [v.strip() for v in line.split('|') if v.strip()]
+                if len(values) < 3:
+                    continue
+                try:
+                    base_uri = values[headers.index('base_uri')]
+                    name = values[headers.index('name')]
+                    concept_type = values[headers.index('type')]
+                    description = values[headers.index('description')] if 'description' in headers and len(values) > headers.index('description') else ''
+                    uri = f"{base_uri}{name}"
+                    registry[uri] = {'type': concept_type, 'description': description}
+                except Exception as e:
+                    log.warning(f"Skipping row: {line} ({str(e)})")
+    log.debug(f"Loaded {len(registry)} entries from concept_registry.md")
+    return registry
 
 def update_concept_registry(script_dir, registry):
     registry_path = os.path.join(script_dir, "concept_registry.md")
@@ -408,3 +529,168 @@ def update_ontology_registry(script_dir, ontology_registry):
         for iri, info in sorted_items:
             f.write(f"| {info['preferred_prefix']} | {iri} | {info['ritso_location']} | {info['description']} |\n")
     log.info(f"Updated ontology_registry.md with {len(ontology_registry)} entries")
+
+def get_shacl_constraints(g: Graph, cls: URIRef, ns: str, prefix_map: dict) -> dict:
+    """
+    Extract human-readable SHACL constraints for properties of a target class.
+    
+    Correctly combines cardinality (from property shape or node shape)
+    with sh:class (which can be on either).
+    
+    For the pattern:
+        sh:property [
+            sh:path :timeReference ;
+            sh:node its-sh:ExactlyOneShape ;   # provides "exactly 1"
+            sh:class :FuzzyTimeCode ;          # "only FuzzyTimeCode"
+        ]
+    
+    This now correctly produces:  "exactly 1 FuzzyTimeCode"
+    """
+    constraints = defaultdict(list)
+
+    def _get_cardinality(shape: URIRef) -> tuple:
+        """Return (minc, maxc) if present on this shape."""
+        minc = g.value(shape, SH.minCount)
+        maxc = g.value(shape, SH.maxCount)
+        return (minc, maxc) if minc is not None or maxc is not None else (None, None)
+
+    def _get_class(shape: URIRef) -> URIRef | None:
+        return g.value(shape, SH['class'])
+
+    def _get_datatype(shape: URIRef) -> URIRef | None:
+        return g.value(shape, SH.datatype)
+
+    for shape in g.subjects(SH.targetClass, cls):
+        for prop_shape in g.objects(shape, SH.property):
+            path = g.value(prop_shape, SH.path)
+            if not path:
+                continue
+
+            prop_name = get_qname(path, ns, prefix_map)
+
+            # Collect all shapes that may contribute constraints for this property
+            shapes_to_check = [prop_shape] + list(g.objects(prop_shape, SH.node))
+
+            # Gather cardinality and class from all relevant shapes
+            min_count = None
+            max_count = None
+            class_uris = []
+            datatype = None
+
+            for s in shapes_to_check:
+                # Cardinality
+                mc = g.value(s, SH.minCount)
+                Mc = g.value(s, SH.maxCount)
+                if mc is not None:
+                    min_count = mc
+                if Mc is not None:
+                    max_count = Mc
+
+                # sh:class
+                cl = g.value(s, SH['class'])
+                if cl and cl not in class_uris:
+                    class_uris.append(cl)
+
+                # datatype (rarely combined with class, but included)
+                dt = g.value(s, SH.datatype)
+                if dt:
+                    datatype = dt
+
+            # Now build the readable constraint strings
+            if datatype:
+                dt_name = get_qname(datatype, ns, prefix_map)
+                if min_count is not None and max_count is not None and min_count == max_count:
+                    constraints[prop_name].append(f"exactly {min_count} {dt_name}")
+                elif min_count is not None or max_count is not None:
+                    if min_count is not None:
+                        constraints[prop_name].append(f"min {min_count} {dt_name}")
+                    if max_count is not None:
+                        constraints[prop_name].append(f"max {max_count} {dt_name}")
+                else:
+                    # no cardinality, just datatype
+                    constraints[prop_name].append(f"datatype {dt_name}")
+
+            elif class_uris:
+                class_names = [get_qname(c, ns, prefix_map) for c in class_uris]
+                class_str = " or ".join(class_names) if len(class_names) > 1 else class_names[0]
+
+                if min_count is not None and max_count is not None and min_count == max_count:
+                    constraints[prop_name].append(f"exactly {min_count} {class_str}")
+                elif min_count is not None or max_count is not None:
+                    if min_count is not None:
+                        constraints[prop_name].append(f"min {min_count} {class_str}")
+                    if max_count is not None:
+                        constraints[prop_name].append(f"max {max_count} {class_str}")
+                else:
+                    constraints[prop_name].append(f"only {class_str}")
+
+            else:
+                # No class and no datatype → plain cardinality only
+                if min_count is not None and max_count is not None and min_count == max_count:
+                    constraints[prop_name].append(f"exactly {min_count}")
+                else:
+                    if min_count is not None:
+                        constraints[prop_name].append(f"min {min_count}")
+                    if max_count is not None:
+                        constraints[prop_name].append(f"max {max_count}")
+    return constraints
+
+def get_shacl_diagram_constraints(g: Graph, cls: URIRef, ns: str, prefix_map: dict) -> dict:
+    """Extract property constraints from SHACL.
+    
+    Returns {prop_qname: {'multiplicity': '0..1' or '1' or '1..*', ... , 'range': 'xsd:string' or 'TargetClass'}}
+    """
+    constraints = defaultdict(dict)
+
+    def _get_multiplicity(shape) -> str | None:
+        minc = g.value(shape, SH.minCount)
+        maxc = g.value(shape, SH.maxCount)
+
+        if minc is None and maxc is None:
+            return None
+
+        # Normalize to UML-style string
+        if minc is not None and maxc is not None and minc == maxc:
+            if minc == 1:
+                return "1"          # most common shorthand
+            return f"{minc}"        # exactly N → just "N" or "3"
+
+        min_str = str(minc) if minc is not None else "0"
+        max_str = str(maxc) if maxc is not None else "*"
+        return f"{min_str}..{max_str}"
+
+    for shape in g.subjects(SH.targetClass, cls):
+        for prop_shape in g.objects(shape, SH.property):
+            path = g.value(prop_shape, SH.path)
+            if not path:
+                continue
+            prop_name = get_qname(path, ns, prefix_map)
+
+            # Direct constraints + sh:node reusable shapes
+            for s in [prop_shape] + list(g.objects(prop_shape, SH.node)):
+                mult = _get_multiplicity(s)
+                if mult:
+                    constraints[prop_name]['multiplicity'] = mult
+
+                # Range / class (for both data and object)
+                sh_class = g.value(s, SH['class'])
+                if sh_class:
+                    constraints[prop_name]['range'] = get_qname(sh_class, ns, prefix_map)
+
+                # Datatype
+                sh_datatype = g.value(s, SH.datatype)
+                if sh_datatype:
+                    constraints[prop_name]['datatype'] = get_qname(sh_datatype, ns, prefix_map)
+
+    return constraints
+
+def get_reqview_id(g: Graph, concept: URIRef, ns: str, prefix_map: dict) -> str:
+    """Extract ReqView object ID from custom annotation.
+    Looks for its-core:reqviewId or similar property."""
+    # Adjust the property URI to match your ontology
+    REQVIEW_ID_PROP = URIRef("https://w3id.org/itsdata/core/v1/reqviewId")
+    
+    rid = g.value(concept, REQVIEW_ID_PROP)
+    if rid and isinstance(rid, Literal):
+        return str(rid)
+    return ""  # no ID yet

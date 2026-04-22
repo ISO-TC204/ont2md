@@ -1,3 +1,4 @@
+# owl2md.py
 # owl2mkdocs.py
 import os
 import sys
@@ -7,7 +8,7 @@ import re
 from collections import defaultdict
 from ontology_processor_owl import process_ontology
 from diagram_generator import generate_diagram
-from markdown_generator import generate_markdown, update_mkdocs_nav, generate_index
+from markdown_generator import generate_markdown, update_mkdocs_nav, generate_index, generate_pattern_markdown_file
 from utils import get_qname, get_label, is_abstract, get_id, get_ontology_metadata, insert_spaces
 from rdflib import Graph, RDF, XSD, URIRef, Literal, Namespace
 from rdflib.namespace import OWL, DCTERMS, SKOS, RDFS, DC
@@ -15,46 +16,6 @@ from rdflib.namespace import OWL, DCTERMS, SKOS, RDFS, DC
 # -------------------- logging --------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s")
 log = logging.getLogger("owl2mkdocs")
-
-def generate_pattern_markdown(ont_name: str, ont: dict, docs_dir: str, class_to_onts: defaultdict, ontology_info: dict):
-    """Generate the per-pattern Markdown page, now including imported patterns."""
-    filename = os.path.join(docs_dir, f"{ont_name}.md")
-    title = f"# {insert_spaces(ont_name)}\n\n"
-    desc = ont["description"] or ""
-    top_desc = f"{desc}\n\n" if desc else ""
-
-    # === NEW: Imports section ===
-    imports_md = ""
-    if ont.get("imports"):
-        imports_md = "This pattern imports the following patterns:\n\n"
-        for imp_name in sorted(ont["imports"]):
-            display = insert_spaces(imp_name)
-            if imp_name in ontology_info:                     # local pattern → link to its .md
-                imports_md += f"- [{display}]({imp_name}.md)\n"
-            else:                                             # external / unknown → plain text
-                imports_md += f"- {display}\n"
-        imports_md += "\n"
-
-    members_md = "This pattern consists of the following classes:\n\n"
-    i = 0
-    for cls_name in sorted(ont["classes"], key=str.lower):
-        if cls_name == 'ITSThing':
-            continue
-        i += 1
-        display_cls = insert_spaces(cls_name)
-        if len(class_to_onts[cls_name]) > 1:
-            display_cls += f" ({ont_name})"
-        members_md += f"- [{display_cls}]({cls_name}.md)\n"
-    if i == 0:
-        members_md = "This pattern does not contain any classes.\n\n"
-    filename_owl = ont_name + ".owl"
-    formal = f"\nThe formal definition of this pattern is available in [{os.path.splitext(filename_owl)[1][1:].upper()} Syntax]({filename_owl}).\n\n"
-    content = title + top_desc + imports_md + members_md + formal
-    with open(filename, "w", encoding="utf-8") as f:
-        if ontology_info[ont_name].get("draft"):
-            f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
-        f.write(content)
-    log.info("Generated pattern Markdown at %s", filename)
 
 def main():
     CDM1 = Namespace("https://w3id.org/citydata/part1/v1/")
@@ -131,14 +92,14 @@ def main():
         if not ns:
             ns = "https://w3id.org/citydata/part1/v1/"
         # Normalize to base namespace (remove last segment if pattern name appended)
-        if ns.endswith('/'):
-            ns = ns.rstrip('/')
-        last_segment = ns.rsplit('/', 1)[-1]
-        if last_segment == ontology_name or last_segment == ontology_name.lower():
-            ns = ns.rsplit('/', 1)[0] + '/'
-        else:
-            ns += '/'
-        log.debug("Normalized ns for %s: %s", ontology_name, ns)
+#        if ns.endswith('/'):
+#            ns = ns.rstrip('/')
+#        last_segment = ns.rsplit('/', 1)[-1]
+#        if last_segment == ontology_name or last_segment == ontology_name.lower():
+#            ns = ns.rsplit('/', 1)[0] + '/'
+#        else:
+#            ns += '/'
+#        log.debug("Normalized ns for %s: %s", ontology_name, ns)
 
 
         title = get_ontology_metadata(temp_g, ns, DCTERMS.alternative) or get_ontology_metadata(temp_g, ns, DCTERMS.title) or insert_spaces(ontology_name)
@@ -163,19 +124,17 @@ def main():
         local_classes_temp = set()
         for c in defined_classes:
             c_str = str(c)
+            log.debug("Processing class %s against namespace %s", c_str, ns)
             if c_str.startswith(ns):
                 cls_name = get_label(temp_g, c)
-                if cls_name != 'ITSThing':
-                    local_classes_temp.add(cls_name)
-                    log.debug("Added class to %s: %s (URI: %s)", ontology_name, cls_name, c_str)
+                local_classes_temp.add(cls_name)
+                log.debug("Added class to %s: %s (URI: %s)", ontology_name, cls_name, c_str)
             else:
                 log.debug("Skipped class URI not matching ns: %s", c_str)
 
         imports = []
         for imp in temp_g.objects(None, OWL.imports):
-            imp_str = str(imp).rstrip('/#')
-            import_name = imp_str.rsplit('/', 1)[-1] if '/' in imp_str else imp_str
-            imports.append(import_name)
+            imports.append(str(imp))
 
         isDraft = is_draft.lower() == 'true' if is_draft else False
         ontology_info[ontology_name] = {
@@ -218,10 +177,10 @@ def main():
     # prop_map
     prop_map = {}
     for p in g.subjects(RDF.type, OWL.ObjectProperty):
-        qn = get_qname(g, p, ns, prefix_map)
+        qn = get_qname(p, ns, prefix_map)
         prop_map[qn] = p
     for p in g.subjects(RDF.type, OWL.DatatypeProperty):
-        qn = get_qname(g, p, ns, prefix_map)
+        qn = get_qname(p, ns, prefix_map)
         prop_map[qn] = p
 
     # Collect classes from full g
@@ -242,7 +201,7 @@ def main():
 
     # Update global collections
     for cls in classes:
-        cls_qname = get_qname(g, cls, ns, prefix_map)
+        cls_qname = get_qname(cls, ns, prefix_map)
         abstract_map[cls_qname] = is_abstract(cls, g, ns)
         if cls_qname != 'ITSThing':
             global_all_classes.add(cls_qname)
@@ -277,7 +236,7 @@ def main():
 
     # Generate pattern markdowns
     for ont_name, ont in ontology_info.items():
-        generate_pattern_markdown(ont_name, ont, docs_dir, class_to_onts, ontology_info)
+        generate_pattern_markdown_file(ont_name, ont, docs_dir, class_to_onts, ontology_info)
 
     # Update mkdocs.yml navigation
     try:
@@ -289,7 +248,7 @@ def main():
 
     # Generate index.md
     try:
-        generate_index(docs_dir, ontology_info, errors, full_title, isDraft)
+        generate_index(docs_dir, ontology_info, errors, full_title, class_to_onts, isDraft)
     except Exception as e:
         error_msg = f"Error generating index.md: {str(e)}\n{traceback.format_exc()}"
         errors.append(error_msg)

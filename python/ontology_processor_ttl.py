@@ -1,13 +1,22 @@
+# ontology_processor_ttl.py
 import os
 import logging
 import traceback
-from rdflib import Graph, RDF, OWL, URIRef, Literal, XSD, RDFS
-from utils import get_qname, get_ontology_metadata, _norm_base, update_concept_registry
-from rdflib.namespace import DC, DCTERMS
+import re
+from rdflib import Graph, RDF, OWL, RDFS, URIRef, Literal
+from rdflib.namespace import DC, DCTERMS, SKOS, SH
+
+from utils import (
+    get_qname, get_ontology_metadata, _norm_base,
+    get_leaf_classes, collect_oneOf, collect_list,
+    update_concept_registry, parse_concept_registry
+)
 
 log = logging.getLogger("ttl2mkdocs")
 
+
 def parse_concept_registry(script_dir):
+    """Same as before – kept for consistency."""
     registry_path = os.path.join(script_dir, "concept_registry.md")
     if not os.path.exists(registry_path):
         with open(registry_path, 'w', encoding='utf-8') as f:
@@ -23,13 +32,10 @@ def parse_concept_registry(script_dir):
         if line.strip().startswith('|'):
             if not in_table:
                 headers = [h.strip().lower() for h in line.split('|') if h.strip()]
-                log.debug(f"Parsed headers: {headers}")
                 in_table = True
             elif headers and not line.strip().startswith('|---'):
                 values = [v.strip() for v in line.split('|') if v.strip()]
-                log.debug(f"Parsed values: {values}")
-                if len(values) < 3:  # Require at least base_uri, name, type
-                    log.warning(f"Skipping row with insufficient values (expected at least 3, got {len(values)}): {line}")
+                if len(values) < 3:
                     continue
                 try:
                     base_uri = values[headers.index('base_uri')]
@@ -38,163 +44,110 @@ def parse_concept_registry(script_dir):
                     description = values[headers.index('description')] if 'description' in headers and len(values) > headers.index('description') else ''
                     uri = f"{base_uri}{name}"
                     registry[uri] = {'type': concept_type, 'description': description}
-                except ValueError as e:
-                    log.warning(f"Skipping row due to missing header: {line} ({str(e)})")
-    log.info(f"Loaded {len(registry)} entries from concept_registry.md")
+                except Exception:
+                    pass
+    log.debug(f"Loaded {len(registry)} entries from concept_registry.md")
     return registry
 
-def process_ontology(ttl_path: str, errors: list, ontology_info) -> tuple:
-    """Process a TTL file and update ontology_info, return graph, namespace, prefix map, classes, local classes, and property map."""
-    # Load TTL ontology into RDF graph
-    try:
-        g = Graph()
-        g.parse(ttl_path, format='turtle')
-        log.info("Loaded ontology %s with %d triples", ttl_path, len(g))
-        # Debug RuleMaker triples
-#        rulemaker_uri = URIRef("https://isotc204.org/ontologies/its/regulation#RuleMaker")
-#        log.info("Checking triples for RuleMaker (%s):", rulemaker_uri)
-#        for s, p, o in g.triples((rulemaker_uri, None, None)):
-#            log.info("  Triple: (%s, %s, %s)", s, p, o)
-        if len(g) == 0:
-            raise ValueError("RDF graph is empty after loading ontology")
-    except Exception as e:
-        error_msg = f"Failed to load or parse ontology from {ttl_path}: {str(e)}\n{traceback.format_exc()}"
-        errors.append(error_msg)
-        log.error(error_msg)
-        return None, None, None, None, None, None
 
-    # Dynamically set default namespace from ontology IRI
-    ns = None
-    for s in g.subjects(RDF.type, OWL.Ontology):
-        ns = str(s)
-        break
-    if not ns:
-        log.warning("No ontology IRI found in TTL file %s; using default namespace", ttl_path)
-        ns = "https://isotc204.org/ontologies/its/regulation#"
-    log.info("Using namespace %s for ontology %s", ns, ttl_path)
+def _extract_master_namespace(ttl_files: list) -> str:
+    """Find the true master base namespace from BASE declaration or vann:preferredNamespaceUri."""
+    for ttl_path in ttl_files:
+        try:
+            with open(ttl_path, 'r', encoding='utf-8') as f:
+                content = f.read()
 
-    # Load the concept registry from the Python script directory
+            # 1. Direct BASE declaration (most reliable for your files)
+            base_match = re.search(r'BASE\s+<([^>]+)>', content, re.IGNORECASE)
+            if base_match:
+                ns = base_match.group(1).rstrip('#/') + '/'
+                log.info(f"Found master namespace from BASE: {ns}")
+                return ns
+
+            # 2. vann:preferredNamespaceUri on any ontology
+            pref_match = re.search(r'vann:preferredNamespaceUri\s+<([^>]+)>', content)
+            if pref_match:
+                ns = pref_match.group(1).rstrip('#/') + '/'
+                log.info(f"Found master namespace from vann:preferredNamespaceUri: {ns}")
+                return ns
+
+        except Exception as e:
+            log.warning(f"Could not read {ttl_path} for namespace: {e}")
+
+    # Fallback
+    log.warning("No BASE or vann:preferredNamespaceUri found – using default")
+    return "https://w3id.org/itsdata/time/v1/"
+
+
+def process_ttl_files(ttl_files: list, errors: list) -> tuple:
+    """
+    Load ALL .ttl files into ONE unified graph.
+    Uses the TRUE master base namespace (from BASE) so local_classes works correctly.
+    """
+    g = Graph()
+
+    # Load every file
+    for ttl_path in ttl_files:
+        try:
+            g.parse(ttl_path, format='turtle')
+            log.info(f"Loaded {os.path.basename(ttl_path)} — total triples now {len(g)}")
+        except Exception as e:
+            error_msg = f"Failed to parse {ttl_path}: {str(e)}"
+            errors.append(error_msg)
+            log.error(error_msg)
+
+    if len(g) == 0:
+        raise ValueError("No triples loaded from any TTL file")
+
+    # === CRITICAL FIX: Get the master base namespace ===
+    ns = _extract_master_namespace(ttl_files)
+    log.info(f"Using master base namespace: {ns}")
+
+    # Build prefix map
+    prefix_map = dict(g.namespaces())
+    if ns not in prefix_map:
+        prefix_map[ns] = ":"
+
+    # Registry (only add local properties)
     script_dir = os.path.dirname(os.path.realpath(__file__))
     registry = parse_concept_registry(script_dir)
 
-    # Add object and datatype properties from registry to the graph
     for uri, info in registry.items():
-        if info['type'] == 'object_property':
-            g.add((URIRef(uri), RDF.type, OWL.ObjectProperty))
-            log.debug(f"Added to graph: {uri} a owl:ObjectProperty")
-        elif info['type'] == 'datatype_property':
-            g.add((URIRef(uri), RDF.type, OWL.DatatypeProperty))
-            log.debug(f"Added to graph: {uri} a owl:DatatypeProperty")
+        u = URIRef(uri)
+        if str(u).startswith(ns):
+            if info['type'] == 'object_property':
+                g.add((u, RDF.type, OWL.ObjectProperty))
+            elif info['type'] == 'datatype_property':
+                g.add((u, RDF.type, OWL.DatatypeProperty))
 
-    # Collect new concepts (local and external) from the current ontology
-    new_concepts = {}
-    # Local classes
-    for cls in g.subjects(RDF.type, OWL.Class):
-        uri = str(cls)
-        if uri.startswith(ns) and uri not in registry and uri not in new_concepts:
-            description = g.value(cls, RDFS.comment) or g.value(cls, DC.description) or ''
-            new_concepts[uri] = {'type': 'class', 'description': str(description) if isinstance(description, Literal) else description}
-            log.debug(f"Added local class: {uri}")
-    # Local object properties
-    for prop in g.subjects(RDF.type, OWL.ObjectProperty):
-        uri = str(prop)
-        if uri.startswith(ns) and uri not in registry and uri not in new_concepts:
-            description = g.value(prop, RDFS.comment) or g.value(prop, DC.description) or ''
-            new_concepts[uri] = {'type': 'object_property', 'description': str(description) if isinstance(description, Literal) else description}
-            log.debug(f"Added local object_property: {uri}")
-    # Local datatype properties
-    for prop in g.subjects(RDF.type, OWL.DatatypeProperty):
-        uri = str(prop)
-        if uri.startswith(ns) and uri not in registry and uri not in new_concepts:
-            description = g.value(prop, RDFS.comment) or g.value(prop, DC.description) or ''
-            new_concepts[uri] = {'type': 'datatype_property', 'description': str(description) if isinstance(description, Literal) else description}
-            log.debug(f"Added local datatype_property: {uri}")
-
-    # Inferred external concepts from usage
-    for s, p, o in g.triples((None, RDFS.subClassOf, None)):
-        if isinstance(o, URIRef) and not str(o).startswith(ns) and str(o) != str(OWL.Thing):
-            uri = str(o)
-            if uri not in registry and uri not in new_concepts:
-                new_concepts[uri] = {'type': 'class', 'description': ''}
-                log.debug(f"Inferred external class: {uri}")
-    for s, p, o in g.triples((None, RDFS.subClassOf, None)):
-        if (o, RDF.type, OWL.Restriction) in g:
-            prop = g.value(o, OWL.onProperty)
-            if prop and not str(prop).startswith(ns):
-                uri = str(prop)
-                avf = g.value(o, OWL.allValuesFrom)
-                card = g.value(o, OWL.qualifiedCardinality) or g.value(o, OWL.minQualifiedCardinality) or g.value(o, OWL.maxQualifiedCardinality)
-                if avf and isinstance(avf, URIRef):
-                    prop_type = 'object_property'
-                elif card or g.value(o, OWL.onDataRange):
-                    prop_type = 'datatype_property'
-                else:
-                    prop_type = 'object_property'  # Default assumption
-                if uri not in registry and uri not in new_concepts:
-                    new_concepts[uri] = {'type': prop_type, 'description': ''}
-                    log.debug(f"Inferred external {prop_type}: {uri}")
-
-    # Update registry with new concepts only if not present
-    for uri, info in new_concepts.items():
-        if uri not in registry:
-            registry[uri] = info
-    update_concept_registry(script_dir, registry)
-
-    # Extract ontology metadata and update ontology_info
-    dc_title = get_ontology_metadata(g, ns, DC.title) or "Untitled Ontology"
-    dc_description = get_ontology_metadata(g, ns, DC.description) or ""
-    ontology_info["title"] = dc_title
-    ontology_info["description"] = dc_description
-    ontology_info["patterns"] = set()
-    ontology_info["non_pattern_classes"] = set()
-
-    # Extract prefixes and create prefix map
-    prefix_map = {str(uri): f"{prefix}:" for prefix, uri in g.namespaces()}
-    if ns not in prefix_map:
-        prefix_map[ns] = ":"
-    # Add prefixes from registry
-    for uri, info in registry.items():
-        base_uri, name = uri.rsplit('/', 1) if '/' in uri else (uri, '')
-        if '#' in name:
-            base_uri, name = f"{base_uri}/{name.split('#')[0]}#", name.split('#')[1]
-        if not base_uri.endswith(('#', '/')):
-            base_uri += '/'
-        if base_uri not in prefix_map:
-            prefix = name.lower()
-            prefix_map[base_uri] = f"{prefix}:"
-    log.debug("Prefixes for %s:", ttl_path)
-    for uri, prefix in prefix_map.items():
-        log.debug("  %s → %s", prefix, uri)
-
-    # Extract classes (include external from registry)
+    # Collect classes (OWL + SHACL targets)
     classes = set(g.subjects(RDF.type, OWL.Class)) - {OWL.Thing}
-    for uri, info in registry.items():
-        if info['type'] == 'class' and str(uri).startswith('http'):
-            classes.add(URIRef(uri))
-    classes = {cls for cls in classes if str(cls).startswith("http")}
-    log.debug("Found %d classes in ontology %s:", len(classes), ttl_path)
-    for cls in classes:
-        log.debug("  %s", str(cls))
+    for shape in g.subjects(RDF.type, SH.NodeShape):
+        target = g.value(shape, SH.targetClass)
+        if target and isinstance(target, URIRef):
+            classes.add(target)
 
-    # Filter classes by namespace
+    # Local classes = only those under the master namespace
     local_classes = [cls for cls in classes if str(cls).startswith(ns)]
-    log.info("Filtered to %d local classes in namespace %s for %s:", len(local_classes), ns, ttl_path)
-    for cls in local_classes:
-        log.info("  %s", get_qname(g, cls, ns, prefix_map))
 
-    # Create property map: qname to URI
+    log.info(f"Collected {len(classes)} total classes, {len(local_classes)} local classes under master ns")
+
+    # Property map (only local)
     prop_map = {}
     for p in g.subjects(RDF.type, OWL.ObjectProperty):
-        qn = get_qname(g, p, ns, prefix_map)
-        prop_map[qn] = p
+        if str(p).startswith(ns):
+            qn = get_qname(p, ns, prefix_map)
+            prop_map[qn] = p
     for p in g.subjects(RDF.type, OWL.DatatypeProperty):
-        qn = get_qname(g, p, ns, prefix_map)
-        prop_map[qn] = p
-    # Add external properties from registry
+        if str(p).startswith(ns):
+            qn = get_qname(p, ns, prefix_map)
+            prop_map[qn] = p
+
+    # Add registry properties that belong to this master ns
     for uri, info in registry.items():
-        if info['type'] in ('object_property', 'datatype_property'):
-            qn = get_qname(g, URIRef(uri), ns, prefix_map)
-            prop_map[qn] = URIRef(uri)
-            log.debug(f"Added external {info['type']}: {qn}")
+        if info['type'] in ('object_property', 'datatype_property') and str(uri).startswith(ns):
+            u = URIRef(uri)
+            qn = get_qname(u, ns, prefix_map)
+            prop_map[qn] = u
 
     return g, ns, prefix_map, classes, local_classes, prop_map
