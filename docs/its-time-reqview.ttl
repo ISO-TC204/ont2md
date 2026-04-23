@@ -1,0 +1,167 @@
+# =====================================================
+# ReqView Annotations
+# =====================================================
+
+@prefix : <https://w3id.org/itsdata/time/v1/> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix its-core: <https://w3id.org/itsdata/core/v1/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+		
+:ReqView a owl:Ontology;
+    # Ontology metadata
+    dcterms:title                  "ReqView annotations for the Time ontology.";
+    skos:definition                "This ontology defines the identifiers used by ReqView to manage traceability and use of ontology concepts within ITS.";
+    dcterms:license                "http://creativecommons.org/licenses/by/4.0/";
+    dcterms:modified               "2026-04-15T13:59:32"^^xsd:dateTime .
+
+
+# FuzzyTime
+:FuzzyTime a owl:Class ;
+    its-core:reqviewId "its-time-1" .
+
+# DayWeekMonth
+:DayWeekMonth a owl:Class ;
+    its-core:reqviewId "its-time-2" .
+
+# ValidityStatusCode
+:ValidityStatusCode a owl:Class ;
+    its-core:reqviewId "its-time-3" .
+
+# InstanceOfDayWithinMonth
+:InstanceOfDayWithinMonth a owl:Class ;
+    its-core:reqviewId "its-time-4" .
+
+# PublicEventCode
+:PublicEventCode a owl:Class ;
+    its-core:reqviewId "its-time-5" .
+
+# PublicHoliday
+:PublicHoliday a owl:Class ;
+    its-core:reqviewId "its-time-6" .
+
+# ClockTime
+:ClockTime a owl:Class ;
+    its-core:reqviewId "its-time-7" .
+
+# SpecialDay
+:SpecialDay a owl:Class ;
+    its-core:reqviewId "its-time-8" .
+
+# ScheduleThing
+:ScheduleThing a owl:Class ;
+    its-core:reqviewId "its-time-9" .
+
+# TimePeriodOfDay
+:TimePeriodOfDay a owl:Class ;
+    its-core:reqviewId "its-time-10" .
+
+# Period
+:Period a owl:Class ;
+    its-core:reqviewId "its-time-11" .
+
+# Schedule
+:Schedule a owl:Class ;
+    its-core:reqviewId "its-time-12" .
+
+# TimeOfDay
+:TimeOfDay a owl:Class ;
+    its-core:reqviewId "its-time-13" .
+
+# WeekCode
+:WeekCode a owl:Class ;
+    its-core:reqviewId "its-time-14" .
+
+# DateWithinMonth
+:DateWithinMonth a owl:Class ;
+    its-core:reqviewId "its-time-15" .
+
+# OverallPeriod
+:OverallPeriod a owl:Class ;
+    its-core:reqviewId "its-time-16" .
+
+# FuzzyTimeCode
+:FuzzyTimeCode a owl:Class ;
+    its-core:reqviewId "its-time-17" .
+
+# SpecialDayTypeCode
+:SpecialDayTypeCode a owl:Class ;
+    its-core:reqviewId "its-time-18" .
+
+# CalendarWeekWithinMonth
+:CalendarWeekWithinMonth a owl:Class ;
+    its-core:reqviewId "its-time-19" .
+
+# TimeObjectProperty
+:TimeObjectProperty a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-20" .
+
+# timeReference
+:timeReference a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-21" .
+
+# ScheduleObjectProperty
+:ScheduleObjectProperty a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-22" .
+
+# applicableArea
+:applicableArea a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-23" .
+
+# applicableDayOfWeek
+:applicableDayOfWeek a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-24" .
+
+# applicableMonth
+:applicableMonth a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-25" .
+
+# applicableWeek
+:applicableWeek a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-26" .
+
+# dailyEndTime
+:dailyEndTime a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-27" .
+
+# dailyStartTime
+:dailyStartTime a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-28" .
+
+# exceptionPeriod
+:exceptionPeriod a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-29" .
+
+# hasPublicEventType
+:hasPublicEventType a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-30" .
+
+# hasRecurringDayWeekMonthPeriod
+:hasRecurringDayWeekMonthPeriod a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-31" .
+
+# hasRecurringSpecialDay
+:hasRecurringSpecialDay a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-32" .
+
+# hasRecurringTimePeriodOfDay
+:hasRecurringTimePeriodOfDay a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-33" .
+
+# hasSpecialDayType
+:hasSpecialDayType a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-34" .
+
+# hasValidityStatus
+:hasValidityStatus a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-35" .
+
+# validityTimeSpecification
+:validityTimeSpecification a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-36" .
+
+# validPeriod
+:validPeriod a owl:ObjectProperty ;
+    its-core:reqviewId "its-time-37" .
+
