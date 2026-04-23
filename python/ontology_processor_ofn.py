@@ -249,6 +249,30 @@ def process_ontology(ofn_path: str, errors: list, ontology_info) -> tuple:
     for p in g.subjects(RDF.type, OWL.DatatypeProperty):
         qn = get_qname(g, p, ns, prefix_map)
         prop_map[qn] = p
+
+    # Heuristic: infer local datatype properties when rdf:type is missing.
+    # OFN sources sometimes only declare rdfs:range xsd:* or use SHACL in separate graphs.
+    xsd_ns = "http://www.w3.org/2001/XMLSchema#"
+    def _is_local(u) -> bool:
+        return isinstance(u, URIRef) and str(u).startswith(ns)
+    def _add_datatype_prop(p: URIRef):
+        if not _is_local(p):
+            return
+        qn = get_qname(g, p, ns, prefix_map)
+        if qn in prop_map:
+            return
+        prop_map[qn] = p
+        g.add((p, RDF.type, OWL.DatatypeProperty))
+
+    for p in g.subjects(RDFS.range, None):
+        if not _is_local(p):
+            continue
+        for r in g.objects(p, RDFS.range):
+            r_str = str(r)
+            if r == RDFS.Literal or r_str.startswith(xsd_ns):
+                _add_datatype_prop(p)
+                break
+
     # Add external properties from registry
     for uri, info in registry.items():
         if info['type'] in ('object_property', 'datatype_property'):

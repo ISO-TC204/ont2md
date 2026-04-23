@@ -61,7 +61,7 @@ def _extract_master_namespace(ttl_files: list) -> str:
             base_match = re.search(r'BASE\s+<([^>]+)>', content, re.IGNORECASE)
             if base_match:
                 ns = base_match.group(1).rstrip('#/') + '/'
-                log.info(f"Found master namespace from BASE: {ns}")
+                log.debug(f"Found master namespace from BASE: {ns}")
                 return ns
 
             # 2. vann:preferredNamespaceUri on any ontology
@@ -142,6 +142,49 @@ def process_ttl_files(ttl_files: list, errors: list) -> tuple:
         if str(p).startswith(ns):
             qn = get_qname(p, ns, prefix_map)
             prop_map[qn] = p
+
+    # Heuristic: some TTL sources omit rdf:type for datatype properties.
+    # Infer local datatype properties from:
+    #  - rdfs:range of xsd:* / rdfs:Literal
+    #  - SHACL property shapes with sh:datatype (directly or via sh:node reusable shapes)
+    xsd_ns = "http://www.w3.org/2001/XMLSchema#"
+
+    def _is_local(u) -> bool:
+        return isinstance(u, URIRef) and str(u).startswith(ns)
+
+    def _add_datatype_prop(p: URIRef):
+        if not _is_local(p):
+            return
+        qn = get_qname(p, ns, prefix_map)
+        if qn in prop_map:
+            return
+        prop_map[qn] = p
+        g.add((p, RDF.type, OWL.DatatypeProperty))
+
+    # Infer from rdfs:range
+    for p in g.subjects(RDFS.range, None):
+        if not _is_local(p):
+            continue
+        for r in g.objects(p, RDFS.range):
+            r_str = str(r)
+            if r == RDFS.Literal or r_str.startswith(xsd_ns):
+                _add_datatype_prop(p)
+                break
+
+    # Infer from SHACL shapes
+    for shape in g.subjects(RDF.type, SH.NodeShape):
+        for prop_shape in g.objects(shape, SH.property):
+            path = g.value(prop_shape, SH.path)
+            if not _is_local(path):
+                continue
+
+            # sh:datatype can be on the prop shape or on any sh:node referenced shapes
+            shapes_to_check = [prop_shape] + list(g.objects(prop_shape, SH.node))
+            for s in shapes_to_check:
+                dt = g.value(s, SH.datatype)
+                if dt is not None:
+                    _add_datatype_prop(path)
+                    break
 
     # Add registry properties that belong to this master ns
     for uri, info in registry.items():

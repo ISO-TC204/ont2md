@@ -1,0 +1,84 @@
+BASE   <https://w3id.org/itsdata/time/v1/>
+PREFIX : <https://w3id.org/itsdata/time/v1/>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX vann: <http://purl.org/vocab/vann/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+PREFIX its-core: <https://w3id.org/itsdata/core/v1/>
+
+:Core a owl:Ontology;
+    # Ontology metadata
+    dcterms:title                  "Time Ontology for ITS - Core concepts"@en;
+    skos:definition                "This ontology defines core concepts related to time within Intelligent Transportation Systems (ITS)."@en;
+    vann:preferredNamespaceUri     "https://w3id.org/itsdata/time/v1/";
+    vann:preferredNamespacePrefix  "its-time";
+    dcterms:license                "http://creativecommons.org/licenses/by/4.0/";
+    its-core:draft                 "true";
+    
+    #Provenance metadata
+    dcterms:creator                "Kenneth Vaughn";
+    dcterms:created                "Draft";
+    dcterms:modified               "2026-04-07"^^xsd:date;
+    owl:versionInfo                "0.0.3";
+    owl:versionIRI                 :r0.3;
+    owl:priorVersion               :r0.2;
+    
+    # Imports
+    owl:imports                    </itsdata/core/v1/> .
+    # which includes the following cascade of imports:
+    # CityPattern
+    #     LandUsePattern
+    #         CodePattern
+    #             Core(cdm2)
+    #             OrganizationStructurePattern
+    #                 AgentPattern
+    #                    GenericPropertiesPattern
+    #                    ResourcePattern
+    #                        ActivityPattern
+    #                            ChangePattern
+    #                            SpatialLocPattern
+    #                                MereologyPattern
+    #                        CityUnitsPattern
+    #                             ISO21972
+    #                             Core (cdm1)
+    #                                 Time (W3C)
+
+####################################
+# Data Properties
+####################################
+
+:TimeDataProperty a owl:DataProperty;
+        skos:definition     "A data property to organize all data properties defined in the Time Ontology.";
+        rdfs:subPropertyOf  its-core:ITSDataProperty .
+
+# :approvedOn a owl:DataProperty;
+ #       skos:definition     "A data property to indicate the approval date of an object.";
+ #       rdfs:subPropertyOf  :TimeDataProperty .
+
+#:hasDate a owl:DataProperty;
+#        skos:definition     "A data property to indicate the date of an object.";
+#        rdfs:subPropertyOf  :TimeDataProperty .
+
+#:predefinedItineraryReference a owl:DataProperty;
+#        rdfs:subPropertyOf  :TimeDataProperty .
+
+#:predefinedLocationGroupReference a owl:DataProperty;
+#        rdfs:subPropertyOf  :TimeDataProperty .
+
+####################################
+# Object Properties
+####################################
+
+:TimeObjectProperty a owl:ObjectProperty;
+        skos:definition     "An object property to organize all object properties defined in the Time Ontology.";
+        rdfs:subPropertyOf  its-core:ITSObjectProperty .
+
+####################################
+# Classes
+####################################
+
+:TimeThing a owl:Class;
+        rdfs:subClassOf  its-core:ITSThing ;
+        skos:definition     "A class to organize all classes defined in the Time Ontology.".

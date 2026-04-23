@@ -400,20 +400,74 @@ def get_ontology_for_uri(uri_str: str, ns_to_ontology: dict) -> str:
             return ont_name
     return None
 
-def hyperlink_concept(uri: URIRef, ns: str, prefix_map: dict, global_all_classes: set, qname: str = None) -> str:
-    if not uri:
-        return qname or ""
-    iri = str(uri)
+def hyperlink_concept(
+    uri_or_qname,
+    ns: str,
+    prefix_map: dict,
+    global_all_classes: set,
+    qname: str = None,
+    current_doc_dir: str = ".",
+) -> str:
+    """Create markdown hyperlink for classes or properties.
+
+    current_doc_dir:
+      - "index" for `docs/index.md`
+      - "." for root-level docs pages (e.g., class pages like `docs/Foo.md`)
+      - "properties" for docs under `docs/properties/` (e.g., property pages)
+    """
+    if isinstance(uri_or_qname, str):
+        # Try to resolve qname to full URI
+        uri = None
+        if ':' not in uri_or_qname:
+            uri_or_qname = f"{ns}{uri_or_qname}"
+        prefix, local = uri_or_qname.split(':', 1)
+        for p, base in prefix_map.items():
+            if p == prefix or (p == "" and prefix == ""):
+                uri = URIRef(f"{base}{local}")
+                break
+        if uri is None:
+            uri = URIRef(uri_or_qname)  # fallback
+    else:
+        uri = uri_or_qname
+
     if not qname:
         qname = get_qname(uri, ns, prefix_map)
+
+    iri = str(uri)
+
+    def _prefix_to_site_root() -> str:
+        """
+        MkDocs commonly serves pages as directories (use_directory_urls=true),
+        e.g. `Foo.md` is served at `/Foo/`. In that mode, links from `Foo.md`
+        to other root-level pages must go via `../`.
+        """
+        cd = current_doc_dir.strip("/").lower()
+        if cd in ("", "."):
+            return "../"
+        if cd == "properties":
+            return "../../"
+        if cd == "index":
+            return ""
+        return "../"
+
+    # Local class → site URL (directory-style)
     if qname in global_all_classes:
-        url = f"{qname}.md"
-    elif iri.startswith("https://w3id.org/citydata/") or iri.startswith("https://w3id.org/itsdata/"):
-        url = iri
-    else:
-        prefix, local = qname.split(':', 1) if ':' in qname else ('', qname)
-        url = f"https://w3id.org/citydata/imported/{prefix}/{local}"
-    return f"[{qname}]({url})"
+        prefix = _prefix_to_site_root()
+        return f"[{qname}]({prefix}{qname}/)"
+
+    # Local property (new)
+    if iri.startswith(ns):
+        prefix = _prefix_to_site_root()
+        return f"[{qname}]({prefix}properties/{qname}/)"
+
+    # External known ontologies
+    if iri.startswith("https://w3id.org/citydata/") or iri.startswith("https://w3id.org/itsdata/"):
+        return f"[{qname}]({iri})"
+
+    # Other external
+    prefix, local = qname.split(':', 1) if ':' in qname else ('', qname)
+
+    return f"[{qname}](https://w3id.org/citydata/imported/{prefix}/{local})"
 
 def get_url(uri: URIRef, ns: str, prefix_map: dict, global_all_classes: set, withMd: bool = True) -> str:
     if not uri:
@@ -611,11 +665,23 @@ def get_shacl_constraints(g: Graph, cls: URIRef, ns: str, prefix_map: dict) -> d
                     constraints[prop_name].append(f"datatype {dt_name}")
 
             elif class_uris:
-                class_names = [get_qname(c, ns, prefix_map) for c in class_uris]
-                class_str = " or ".join(class_names) if len(class_names) > 1 else class_names[0]
+                # Build class names with hyperlinks
+                class_links = []
+                for c in class_uris:
+                    qname = get_qname(c, ns, prefix_map)          # e.g. "its:FuzzyTimeCode"
+                    iri = str(c)                                  # full IRI as string
+                    
+                    # Markdown hyperlink (most common for docs)
+                    link = f"[{qname}]({iri})"
+                    class_links.append(link)
+                
+                class_str = " or ".join(class_links) if len(class_links) > 1 else class_links[0]
 
-                if min_count is not None and max_count is not None and min_count == max_count:
-                    constraints[prop_name].append(f"exactly {min_count} {class_str}")
+                if min_count is not None and max_count is not None:
+                    if min_count == max_count:
+                        constraints[prop_name].append(f"exactly {min_count} {class_str}")
+                    else:
+                        constraints[prop_name].append(f"min {min_count} and max {max_count} {class_str}")
                 elif min_count is not None or max_count is not None:
                     if min_count is not None:
                         constraints[prop_name].append(f"min {min_count} {class_str}")

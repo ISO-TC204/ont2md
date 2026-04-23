@@ -10,10 +10,8 @@ from rdflib.namespace import DCTERMS, SKOS, DC, SH, VANN
 from ontology_processor_ttl import process_ttl_files
 from diagram_generator import generate_diagram
 from markdown_generator import (
-    generate_markdown,
-    update_mkdocs_nav,
-    generate_index,
-    generate_pattern_markdown_file
+    generate_markdown, update_mkdocs_nav, generate_index,
+    generate_pattern_markdown_file,generate_property_markdown
 )
 from utils import (
     get_qname, get_label, is_abstract, get_id,
@@ -31,7 +29,7 @@ log = logging.getLogger("ttl2mkdocs")
 
 def main():
     """Main entry point for TTL-based ontology → MkDocs + ODM diagrams."""
-    log.info("Starting ttl2md.py (TTL + SHACL support)")
+    log.debug("Starting ttl2md.py (TTL + SHACL support)")
 
     # Handle optional flags
     create_missing = False
@@ -60,7 +58,7 @@ def main():
     # Create diagrams directory
     diagrams_dir = os.path.join(docs_dir, "diagrams")
     os.makedirs(diagrams_dir, exist_ok=True)
-    log.info(f"Diagrams directory: {diagrams_dir}")
+    log.debug(f"Diagrams directory: {diagrams_dir}")
 
     # Find all .ttl files
     ttl_files = [os.path.join(docs_dir, f) for f in os.listdir(docs_dir)
@@ -79,7 +77,7 @@ def main():
         log.error(f"Failed to process TTL files: {e}")
         sys.exit(1)
 
-    log.info(f"Unified graph ready — {len(g)} triples, {len(local_classes)} local classes")
+    log.debug(f"Unified graph ready — {len(g)} triples, {len(local_classes)} local classes")
 
     # Global collections
     global_all_classes = {get_qname(c, ns, prefix_map) for c in all_classes if c != OWL.Thing}
@@ -151,9 +149,7 @@ def main():
         # Deduplicate and sort
         ont["imports"] = sorted(set(direct_imports))
 
-        log.info(f"Direct imports for {ont_name}: {ont['imports']}")
-
-    log.info(f"Built ontology_info with {len(ontology_info)} patterns")
+    log.debug(f"Built ontology_info with {len(ontology_info)} patterns")
     for name, data in ontology_info.items():
         log.debug(f"  • {name}: {len(data['classes'])} direct classes")
 
@@ -190,7 +186,20 @@ def main():
             errors.append(error_msg)
             log.error(error_msg)
 
-    # === 4. Generate pattern overview pages ===
+    # === 4. Generate property documentation pages ===
+    prop_dir = os.path.join(docs_dir, "properties")
+    os.makedirs(prop_dir, exist_ok=True)
+
+    for prop_qname, prop_uri in prop_map.items():   # prop_map from process_ttl_files
+        if str(prop_uri).startswith(ns):            # only local properties
+            generate_property_markdown(
+                g, prop_uri, prop_qname, ns, prefix_map, 
+                docs_dir, global_all_classes,
+                ontology_info[list(ontology_info.keys())[0]]["draft"] 
+                if ontology_info else False
+            )
+
+    # === 5. Generate pattern overview pages ===
     preferred_prefix = get_preferred_prefix(g)
     for ont_name, ont in ontology_info.items():
         log.debug(f"Generating overview for pattern: {ont_name} (preferred prefix: {preferred_prefix})")
@@ -201,7 +210,7 @@ def main():
         else:
             generate_pattern_markdown_file(g, ont_name, ns, prefix_map, ont, docs_dir, class_to_onts, ontology_info)
 
-    # === 5. Update MkDocs navigation ===
+    # === 6. Update MkDocs navigation ===
     try:
         update_mkdocs_nav(mkdocs_path, ontology_info, global_all_classes, errors,
                           class_to_onts, ontology_info, ttl_files)
@@ -216,7 +225,7 @@ def main():
         for err in errors:
             log.error(err)
 
-    # === Generate ReqView update CSV for safe manual import ===
+    # === 7. Generate ReqView update CSV for safe manual import ===
     try:
         generate_reqview_update_csv(g, local_classes, ns, prefix_map, docs_dir, create_missing)
     except Exception as e:

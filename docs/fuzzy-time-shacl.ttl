@@ -1,0 +1,105 @@
+PREFIX : <https://w3id.org/itsdata/time/v1/>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX sh: <http://www.w3.org/ns/shacl#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+PREFIX time: <http://www.w3.org/2006/time#>
+PREFIX its-core: <https://w3id.org/itsdata/core/v1/>
+PREFIX its-sh: <https://w3id.org/itsdata/shacl/v1/>
+
+:FuzzyTimeSHACL a owl:Ontology;
+    # Ontology metadata
+    dcterms:title                  "SHACL rules for Fuzzy Time ontology";
+    skos:definition                "This ontology defines the SHACL rules for concepts related to fuzzy time within Intelligent Transportation Systems (ITS).";
+    dcterms:license                "http://creativecommons.org/licenses/by/4.0/";
+    its-core:draft                 "true";
+    
+    #Provenance metadata
+    dcterms:creator                "Kenneth Vaughn";
+    dcterms:created                "Draft";
+    dcterms:modified               "2026-04-07"^^xsd:date;
+    owl:versionInfo                "0.0.3";
+    owl:versionIRI                 <FuzzyTimeSHACL/r0.3> ;
+    owl:imports                    <https://w3id.org/itsdata/shacl/v1/> .
+
+:ClockTimeShape
+    a sh:NodeShape ;
+    sh:targetClass :ClockTime ;
+    sh:property [
+        sh:path time:hour ;
+        sh:node its-sh:ExactlyOneShape
+    ] ;
+    sh:property [
+        sh:path time:minute ;
+        sh:node its-sh:MaxOneShape ;
+    ] ;
+    sh:property [
+        sh:path time:second ;
+        sh:node its-sh:MaxOneShape ;
+    ] ;
+    sh:property [
+        sh:path time:timeZone ;
+        sh:node its-sh:MaxOneShape ;
+    ] ;
+    sh:property [
+        sh:path time:unitType ;
+        sh:node its-sh:MaxOneShape ;
+    ] ;
+    sh:property [
+        sh:path time:day ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a day component."@en
+    ] ;
+    sh:property [
+        sh:path time:dayOfWeek ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a day of week component."@en
+    ] ;
+    sh:property [
+        sh:path time:dayOfYear ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a day of year component."@en
+    ] ;
+    sh:property [
+        sh:path time:month ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a month component."@en
+    ] ;
+    sh:property [
+        sh:path time:monthOfYear ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a month of year component."@en
+    ] ;
+    sh:property [
+        sh:path time:week ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a week component."@en
+    ] ;
+    sh:property [
+        sh:path time:year ;
+        sh:maxCount 0 ;
+        sh:message "ClockTime must not have a year component."@en
+    ] .
+
+    :FuzzyTimeShape a sh:NodeShape ;
+    sh:targetClass :FuzzyTime ;
+    sh:property [
+        sh:path :timeReference ;
+        sh:node its-sh:ExactlyOneShape ;
+        sh:class :FuzzyTimeCode ;
+    ] ;
+    sh:property [
+        sh:path :offset ;
+        sh:node its-sh:ExactlyOneShape ;
+        sh:datatype xsd:duration ;
+    ] ;
+    sh:property [
+        sh:path time:timeZone ;
+        sh:node its-sh:MaxOneShape
+    ] ;
+    sh:property [
+        sh:path time:unitType ;
+        sh:node its-sh:MaxOneShape
+    ] .
+

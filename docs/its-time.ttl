@@ -1,0 +1,48 @@
+BASE   <https://w3id.org/itsdata/time/v1/>
+PREFIX : <https://w3id.org/itsdata/time/v1/>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX vann: <http://purl.org/vocab/vann/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+PREFIX cdm1: <https://w3id.org/citydata/part1/v1/>
+PREFIX its-core: <https://w3id.org/itsdata/core/v1/>
+
+: a owl:Ontology;
+    # Ontology metadata
+    dcterms:title                  "The Time Ontology for ITS";
+    skos:definition                "This ontology defines concepts related to time within Intelligent Transportation Systems (ITS).";
+    vann:preferredNamespaceUri     "https://w3id.org/itsdata/time/v1/";
+    vann:preferredNamespacePrefix  "its-time";
+    dcterms:license                "http://creativecommons.org/licenses/by/4.0/";
+    its-core:draft                 "true";
+    
+    #Provenance metadata
+    dcterms:creator                "Kenneth Vaughn";
+    dcterms:created                "Draft";
+    dcterms:modified               "2026-04-07"^^xsd:date;
+    owl:versionInfo                "0.0.3";
+    owl:versionIRI                 :r0.3;
+    owl:priorVersion               :r0.2;
+    
+    # Imports
+    owl:imports                    :SchedulePattern .
+    # which includes the following cascade of imports:
+    # FuzzyTimePattern
+    #   Core (its-time)
+    #     CityPattern
+    #       LandUsePattern
+    #         CodePattern
+    #           Core(cdm2)
+    #           OrganizationStructurePattern
+    #               AgentPattern
+    #                    GenericPropertiesPattern
+    #                    ResourcePattern
+    #                        ActivityPattern
+    #                            ChangePattern
+    #                            SpatialLocPattern
+    #                                MereologyPattern
+    #                        CityUnitsPattern
+    #                             ISO21972
+    #                             Core (cdm1)
+    #                                 Time (W3C)

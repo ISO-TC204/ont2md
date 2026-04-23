@@ -5,7 +5,7 @@ import yaml
 import traceback
 from collections import defaultdict
 from rdflib import Graph, URIRef, OWL, RDFS, RDF
-from rdflib.namespace import DCTERMS, SKOS
+from rdflib.namespace import DCTERMS, SKOS, SH
 from utils import (
     get_preferred_prefix, get_qname, get_first_literal, get_shacl_name, insert_spaces, class_restrictions, 
     iter_annotations, DESC_PROPS, get_definition, 
@@ -157,7 +157,7 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: 
     shacl_rows = []
     shacl_data = get_shacl_constraints(g, cls, ns, prefix_map)
     for prop_name, parts in shacl_data.items():
-        hyper_prop = hyperlink_concept(prop_name, ns, prefix_map, global_all_classes, prop_name)
+        hyper_prop = hyperlink_concept(prop_name, ns, prefix_map, global_all_classes)
         shacl_rows.append((hyper_prop, '; '.join(parts)))
 
     # Combine with restrictions from class_restrictions
@@ -383,3 +383,55 @@ def generate_pattern_markdown_file(g: Graph, ont_name: str, ns: str, prefix_map:
         f.write(content)
     log.info("Generated pattern Markdown at %s", filename)
 
+def generate_property_markdown(g: Graph, prop_uri: URIRef, prop_name: str, 
+                               ns: str, prefix_map: dict, docs_dir: str, 
+                               global_all_classes: set, isDraft: bool):
+    """Generate a dedicated Markdown page for a property."""
+    prop_dir = os.path.join(docs_dir, "properties")
+    os.makedirs(prop_dir, exist_ok=True)
+
+    filename = os.path.join(prop_dir, f"{prop_name}.md")
+
+    title = f"# {prop_name}\n\n"
+    desc = get_definition(g, prop_uri)
+
+    # Domain & Range
+    domain = []
+    for d in g.objects(prop_uri, RDFS.domain):
+        domain.append(hyperlink_concept(d, ns, prefix_map, global_all_classes, current_doc_dir="properties"))
+    range_ = []
+    for r in g.objects(prop_uri, RDFS.range):
+        range_.append(hyperlink_concept(r, ns, prefix_map, global_all_classes, current_doc_dir="properties"))
+        log.info(f"Range for {prop_name} with {ns} and {r} : {range_}")
+
+    # SHACL usage
+    used_in = []
+    for shape in g.subjects(SH.targetClass, None):
+        for pshape in g.objects(shape, SH.property):
+            if g.value(pshape, SH.path) == prop_uri:
+                target_cls = g.value(shape, SH.targetClass)
+                if target_cls:
+                        used_in.append(hyperlink_concept(target_cls, ns, prefix_map, global_all_classes, current_doc_dir="properties"))
+
+    content = title + (desc + "\n\n" if desc else "")
+    
+    if domain:
+        content += f"**Domain**: {', '.join(domain)}\n\n"
+    if range_:
+        content += f"**Range**: {', '.join(range_)}\n\n"
+
+    if used_in:
+        content += "## Used in classes\n\n"
+        content += "| Class |\n|-------|\n"
+        for cls_link in used_in:
+            content += f"| {cls_link} |\n"
+        content += "\n"
+
+    content += f"**IRI**: `{str(prop_uri)}`\n"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        if isDraft:
+            f.write("![Draft for review only](https://isotc204.org/assets/img/draft_for_review.svg)\n\n")
+        f.write(content)
+
+    log.info(f"Generated property page: {prop_name}.md")
