@@ -6,6 +6,7 @@ import traceback
 from collections import defaultdict
 from rdflib import Graph, RDF, OWL, URIRef
 from rdflib.namespace import DCTERMS, SKOS, DC, SH, VANN
+from rdflib.plugins.parsers.notation3 import BadSyntax
 
 from ontology_processor_ttl import process_ttl_files
 from diagram_generator import generate_diagram
@@ -15,7 +16,8 @@ from markdown_generator import (
 )
 from utils import (
     get_qname, get_label, is_abstract, get_id,
-    get_ontology_metadata, insert_spaces, get_preferred_prefix
+    get_ontology_metadata, insert_spaces, get_preferred_prefix,
+    resolve_home_ontology,
 )
 from reqview_csv_generator import generate_reqview_update_csv
 
@@ -25,6 +27,22 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
 )
 log = logging.getLogger("ttl2mkdocs")
+
+def _format_syntax_context(path: str, line_no: int | None, window: int = 4) -> str:
+    if not line_no or line_no <= 0:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        start = max(1, line_no - window)
+        end = min(len(lines), line_no + window)
+        out = [f"Context from {os.path.basename(path)}:"]
+        for i in range(start, end + 1):
+            marker = ">>" if i == line_no else "  "
+            out.append(f"{marker} {i:>5} | {lines[i-1].rstrip()}")
+        return "\n".join(out)
+    except Exception:
+        return ""
 
 
 def main():
@@ -86,21 +104,44 @@ def main():
     ns_to_ontology = {ns: "FuzzyTime"}  # adjust if you have multiple patterns
 
     # === 2. Build ontology_info (one entry per pattern file) ===
-    # Each .ttl file (except -shacl/-core) becomes its own pattern.
+    # Each *-pattern.ttl file becomes its own pattern.
     # We load each file *individually* so we can see exactly which classes it declares.
     ontology_info = {}
     class_to_onts = defaultdict(set)          # class_name → set of pattern names that define it
 
     for ttl_path in ttl_files:
         base_name = os.path.splitext(os.path.basename(ttl_path))[0]
-        if base_name.endswith(('-shacl', '-core')):
+        if base_name.endswith('-shacl'):
             continue
 
         ont_name = base_name.replace('-pattern', '')   # e.g. fuzzy-time-pattern.ttl → fuzzy-time
 
         # === Load THIS file alone to discover its direct classes ===
         temp_g = Graph()
-        temp_g.parse(ttl_path, format="turtle")
+        try:
+            temp_g.parse(ttl_path, format="turtle")
+        except BadSyntax as e:
+            line_no = getattr(e, "lines", None)
+            col = getattr(e, "column", None)
+            msg = str(e) if str(e) else "BadSyntax while parsing Turtle"
+            ctx = _format_syntax_context(ttl_path, line_no)
+            loc = f"line {line_no}" + (f", col {col}" if col is not None else "") if line_no else "unknown location"
+            log.error("Error parsing TTL file %s at %s.\n%s\n%s", ttl_path, loc, msg, ctx)
+            sys.exit(2)
+        except Exception as e:
+            log.error("Error parsing TTL file %s (%s)", ttl_path, str(e))
+            sys.exit(2)
+
+        # === Determine ontology module name (case-sensitive) for filenames ===
+        # We prefer the ontology IRI local name, e.g. .../AreaPattern → "AreaPattern"
+        module_name = None
+        for ont_iri in temp_g.subjects(RDF.type, OWL.Ontology):
+            if isinstance(ont_iri, URIRef):
+                module_name = str(ont_iri).split("/")[-1].split("#")[-1]
+                if module_name:
+                    break
+        if not module_name:
+            module_name = ont_name
 
         direct_classes = set()
         for s in temp_g.subjects(RDF.type, OWL.Class):
@@ -108,6 +149,15 @@ def main():
                 cls_name = get_label(temp_g, s) or get_qname(s, ns, prefix_map)
 #                if cls_name not in ('ITSThing', 'TimeThing'):
                 direct_classes.add(cls_name)
+
+        # Direct properties defined in this module (used for nav grouping)
+        direct_properties = set()
+        for p in temp_g.subjects(RDF.type, OWL.ObjectProperty):
+            if isinstance(p, URIRef) and str(p).startswith(ns):
+                direct_properties.add(get_qname(p, ns, prefix_map))
+        for p in temp_g.subjects(RDF.type, OWL.DatatypeProperty):
+            if isinstance(p, URIRef) and str(p).startswith(ns):
+                direct_properties.add(get_qname(p, ns, prefix_map))
 
         # === Metadata for this pattern ===
         title = get_ontology_metadata(temp_g, ns, DCTERMS.title) or insert_spaces(ont_name)
@@ -122,9 +172,11 @@ def main():
             "full_title": title,
             "description": desc,
             "classes": direct_classes,          # ← only classes defined in THIS file
+            "properties": sorted(direct_properties),
             "imports": [],                      # filled below if needed
             "draft": is_draft.lower() == "true",
             "file": ttl_path,                    # for debugging
+            "module_name": module_name,          # used for pattern page filename + capitalization
             "prefix": prefix if prefix else ont_name  # for navigation grouping
         }
 
@@ -136,7 +188,23 @@ def main():
     for ont_name, ont in ontology_info.items():
         ttl_path = ont["file"]
         temp_g = Graph()
-        g.parse("/Users/kvaughn/GitHub/ontology-its-core/docs/its-sh.ttl", format="turtle")
+        shared_shacl = "/Users/kvaughn/GitHub/ontology-its-core/docs/its-sh.ttl"
+        if os.path.exists(shared_shacl):
+            try:
+                temp_g.parse(shared_shacl, format="turtle")
+            except BadSyntax as e:
+                line_no = getattr(e, "lines", None)
+                col = getattr(e, "column", None)
+                msg = str(e) if str(e) else "BadSyntax while parsing Turtle"
+                ctx = _format_syntax_context(shared_shacl, line_no)
+                loc = f"line {line_no}" + (f", col {col}" if col is not None else "") if line_no else "unknown location"
+                log.error("Error parsing shared SHACL file %s at %s.\n%s\n%s", shared_shacl, loc, msg, ctx)
+                # Graceful exit: we explicitly want the user to see location info,
+                # but we do not want a long traceback or partial site generation.
+                sys.exit(2)
+            except Exception as e:
+                log.error("Error parsing shared SHACL file %s (%s)", shared_shacl, str(e))
+                sys.exit(2)
         temp_g.parse(ttl_path, format="turtle")
 
         direct_imports = []   
@@ -199,16 +267,23 @@ def main():
                 if ontology_info else False
             )
 
-    # === 5. Generate pattern overview pages ===
+    # === 5. Generate index + pattern overview pages ===
     preferred_prefix = get_preferred_prefix(g)
+    home_ont_name = resolve_home_ontology(ontology_info, preferred_prefix)
+    index_generated = False
     for ont_name, ont in ontology_info.items():
         log.debug(f"Generating overview for pattern: {ont_name} (preferred prefix: {preferred_prefix})")
-        if ont_name == preferred_prefix:
-            generate_index(g, ont_name, ns, prefix_map, ont, docs_dir, ontology_info, errors, class_to_onts, False)
-        elif ont_name.endswith('-reqview'):
+        if ont_name.endswith('-reqview'):
             continue
+        if ont_name == home_ont_name:
+            generate_index(g, ont_name, ns, prefix_map, ont, docs_dir, ontology_info, errors, class_to_onts, ont["draft"] if ont else True)
+            index_generated = True
         else:
             generate_pattern_markdown_file(g, ont_name, ns, prefix_map, ont, docs_dir, class_to_onts, ontology_info)
+
+    if not index_generated and home_ont_name and home_ont_name in ontology_info:
+        ont = ontology_info[home_ont_name]
+        generate_index(g, home_ont_name, ns, prefix_map, ont, docs_dir, ontology_info, errors, class_to_onts, ont["draft"] if ont else True)
 
     # === 6. Update MkDocs navigation ===
     try:
