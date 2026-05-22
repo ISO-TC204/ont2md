@@ -1,8 +1,8 @@
 # ont2md
 
-Generate a [MkDocs](https://www.mkdocs.org/) site (with ODM-style diagrams) from Turtle ontology files in `docs/`.
+This project provides a script to generate a [MkDocs](https://www.mkdocs.org/) site (with ODM-style diagrams) from RDF. The script currently works with Turtle ontology files in `docs/`, although it may be expanded to support other formats (e.g., RDF/XML) in the future.
 
-The main entry point for Turtle sources is `python/ttl2md.py`. Related scripts (`owl2md.py`, `ofn2md.py`) handle other formats and are not covered here.
+The main entry point for Turtle sources is `python/ttl2md.py`. Related scripts (`owl2md.py`, `ofn2md.py`) are for future use and are not debugged.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ Run the script from the **project root** (the directory that contains `mkdocs.ym
 
 | Requirement | Purpose |
 |-------------|---------|
-| `mkdocs.yml` | Site configuration; navigation is rewritten on each run |
+| `mkdocs.yml` | Site configuration; navigation is rewritten on each run. A sample mkdocs.yml file can be found in any of the ISO-TC204/ontology repositories |
 | `docs/` | Source `.ttl` files and generated Markdown output |
 | Python 3 | Runtime |
 | [RDFLib](https://rdflib.readthedocs.io/) | Parse and query Turtle |
@@ -38,6 +38,8 @@ Optional flag:
 |------|---------|
 | `--create-missing` or `-c` | ReqView CSV includes concepts **without** `its-core:reqviewId` (empty `id` column for new ReqView objects). Default: only concepts that already have a ReqView ID. |
 
+The use of ReqView for tracing ontology concepts to use cases is entirely optional but has been provided for use within ISO TC 204.
+
 No other command-line arguments are accepted. Extra arguments print usage and exit with code `1`.
 
 ### Exit behavior
@@ -60,7 +62,7 @@ All files matching `docs/*.ttl` (case-insensitive extension) are loaded into one
 | `*-reqview.ttl` | `its-time-reqview.ttl` | **ReqView sidecar** — `its-core:reqviewId` annotations; excluded from site index, pattern pages, and MkDocs nav |
 | Other `.ttl` | `core.ttl`, `its-time.ttl` | **Ontology modules** — metadata and locally declared classes/properties; may serve as the site “home” module |
 
-Pattern module keys drop the `-pattern` suffix (for example `fuzzy-time-pattern.ttl` → module name `fuzzy-time`).
+Pattern module ontology names are in UpperCamelCase (for example `fuzzy-time-pattern.ttl` → name of ontology concet within file: `:FuzzyTimePattern`).
 
 ### Namespace and “local” concepts
 
@@ -129,17 +131,8 @@ From the project root, under `docs/`:
 
 This repository’s `docs/` folder illustrates the conventions:
 
-- `core.ttl` — core module and home metadata (`vann:preferredNamespacePrefix` `its-time`)
+- `<prefered-prefix>.ttl` - (e.g. `its-time.ttl`) imports all pattern ttl files into master for namespace and home metadata (`vann:preferredNamespacePrefix` `its-time`)
+- `core-pattern.ttl` — core module defining concepts that need to be imported by all others (e.g., TimeThing)
 - `fuzzy-time-pattern.ttl` / `schedule-pattern.ttl` — pattern OWL
 - `fuzzy-time-shacl.ttl` / `schedule-shacl.ttl` — SHACL shapes
 - `its-time-reqview.ttl` — ReqView IDs
-
-## Related scripts
-
-| Script | Input |
-|--------|--------|
-| `python/ttl2md.py` | Turtle (`.ttl`) |
-| `python/owl2md.py` | RDF/XML (`.owl`) |
-| `python/ofn2md.py` | OWL Functional Syntax (`.ofn`) |
-
-All expect the same project layout (`mkdocs.yml`, `docs/`) and share diagram and Markdown generators.
