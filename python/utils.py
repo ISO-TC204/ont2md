@@ -18,10 +18,83 @@ def _norm_base(u: str) -> str:
     return u.rstrip('/#')
 
 def get_pattern_name(ont_name: str) -> str:
-    return f"{ont_name}-pattern" if ont_name != "core" else "core"
+    # Turtle pattern filenames stay lowercase/hyphenated on disk (e.g., area-pattern.ttl),
+    # but the *generated pattern page* is controlled separately via ontology_info.module_name.
+    return f"{ont_name}-pattern"
 
 def get_shacl_name(ont_name: str) -> str:
-    return f"{ont_name}-shacl" if ont_name != "core" else "core"
+    return f"{ont_name}-shacl"
+
+def is_pattern_ttl_file(ont: dict) -> bool:
+    """True when the ontology module is loaded from a *-pattern.ttl file."""
+    path = ont.get("file") or ""
+    return os.path.basename(path).lower().endswith("-pattern.ttl")
+
+def get_source_ttl_basename(ont_name: str, ont: dict) -> str:
+    """Return the on-disk Turtle filename for an ontology module."""
+    path = ont.get("file")
+    if path:
+        return os.path.basename(path)
+    return get_pattern_name(ont_name) + ".ttl"
+
+def resolve_home_ontology(ontology_info: dict, preferred_prefix: str) -> str | None:
+    """
+    Pick the ontology module that owns docs/index.md.
+
+    The home page follows vann:preferredNamespacePrefix when a matching TTL file
+    exists (e.g. its-time.ttl). Otherwise use the module that declares that
+    prefix (e.g. core.ttl with prefix its-time), or the sole remaining module.
+    """
+    if not ontology_info:
+        return None
+
+    pref = (preferred_prefix or "").strip()
+    if pref and pref in ontology_info:
+        return pref
+
+    for name, ont in ontology_info.items():
+        if name.endswith("-reqview"):
+            continue
+        if pref and ont.get("prefix") == pref:
+            return name
+
+    non_reqview = [n for n in ontology_info if not n.endswith("-reqview")]
+    if len(non_reqview) == 1:
+        return non_reqview[0]
+    return non_reqview[0] if non_reqview else None
+
+def should_skip_nav_ontology(ont_name: str, ont: dict) -> bool:
+    """Skip nav only for ReqView sidecars and empty ontology header shells."""
+    if ont_name.endswith("-reqview"):
+        return True
+    if ont_name == ont.get("prefix"):
+        classes = ont.get("classes") or set()
+        properties = ont.get("properties") or []
+        if not classes and not properties:
+            return True
+    return False
+
+def get_pattern_modules(ontology_info: dict) -> list:
+    """Ontology module keys backed by a *-pattern.ttl file."""
+    return sorted(
+        (
+            name
+            for name, ont in ontology_info.items()
+            if not name.endswith("-reqview") and is_pattern_ttl_file(ont)
+        ),
+        key=str.lower,
+    )
+
+def get_nav_modules(ontology_info: dict) -> list:
+    """Ontology modules that should appear in mkdocs navigation."""
+    return sorted(
+        (
+            name
+            for name in ontology_info
+            if not should_skip_nav_ontology(name, ontology_info[name])
+        ),
+        key=str.lower,
+    )
 
 def get_prefix_named_pairs(ontology_doc, ns: str):
     """Return [{'prefix': <str>, 'uri': <str>}, ...] from funowl PrefixDeclarations,
@@ -186,26 +259,45 @@ def get_class_expression_str(g: Graph, expr, ns: str, prefix_map: dict) -> str:
         return "ComplexExpr"  # Fallback
     return str(expr)
 
-def get_hyperlinked_class_expression(g: Graph, expr, ns: str, prefix_map: dict, global_all_classes: set) -> str:
+def get_hyperlinked_class_expression(
+    g: Graph,
+    expr,
+    ns: str,
+    prefix_map: dict,
+    global_all_classes: set,
+    current_doc_dir: str = ".",
+) -> str:
     """Convert complex class expression to hyperlinked markdown string."""
     if isinstance(expr, URIRef):
         qname = get_qname(expr, ns, prefix_map)
-        return hyperlink_concept(expr, ns, prefix_map, global_all_classes, qname)
+        return hyperlink_concept(expr, ns, prefix_map, global_all_classes, qname, current_doc_dir=current_doc_dir)
     else:  # BNode
         union_col = g.value(expr, OWL.unionOf)
         if union_col and union_col != RDF.nil:
             members = collect_list(g, union_col)
-            return " or ".join(sorted(get_hyperlinked_class_expression(g, m, ns, prefix_map, global_all_classes) for m in members))
+            return " or ".join(sorted(get_hyperlinked_class_expression(g, m, ns, prefix_map, global_all_classes, current_doc_dir=current_doc_dir) for m in members))
         inter_col = g.value(expr, OWL.intersectionOf)
         if inter_col and inter_col != RDF.nil:
             members = collect_list(g, inter_col)
-            return " and ".join(sorted(get_hyperlinked_class_expression(g, m, ns, prefix_map, global_all_classes) for m in members))
+            return " and ".join(sorted(get_hyperlinked_class_expression(g, m, ns, prefix_map, global_all_classes, current_doc_dir=current_doc_dir) for m in members))
         complement = g.value(expr, OWL.complementOf)
         if complement:
-            return "not " + get_hyperlinked_class_expression(g, complement, ns, prefix_map, global_all_classes)
+            return "not " + get_hyperlinked_class_expression(g, complement, ns, prefix_map, global_all_classes, current_doc_dir=current_doc_dir)
         oneOf_members = collect_oneOf(g, expr)
         if oneOf_members:
-            return "Enum: " + ", ".join(sorted(hyperlink_concept(m, ns, prefix_map, global_all_classes, get_qname(m, ns, prefix_map)) for m in oneOf_members))
+            return "Enum: " + ", ".join(
+                sorted(
+                    hyperlink_concept(
+                        m,
+                        ns,
+                        prefix_map,
+                        global_all_classes,
+                        get_qname(m, ns, prefix_map),
+                        current_doc_dir=current_doc_dir,
+                    )
+                    for m in oneOf_members
+                )
+            )
         # Fallback
         return get_class_expression_str(g, expr, ns, prefix_map)
 
@@ -246,14 +338,21 @@ def collect_oneOf(g: Graph, node) -> list:
             return collect_list(g, oneOf_col)
     return []
 
-def class_restrictions(g: Graph, cls: URIRef, ns: str, prefix_map: dict, global_all_classes: set) -> List[Tuple[str, str]]:
+def class_restrictions(
+    g: Graph,
+    cls: URIRef,
+    ns: str,
+    prefix_map: dict,
+    global_all_classes: set,
+    current_doc_dir: str = ".",
+) -> List[Tuple[str, str]]:
     rows = []
     for restr in g.objects(cls, RDFS.subClassOf):
         if (restr, RDF.type, OWL.Restriction) in g:
             prop = g.value(restr, OWL.onProperty)
             if prop:
                 prop_qname = get_qname(prop, ns, prefix_map)
-                hyper_prop = hyperlink_concept(prop, ns, prefix_map, global_all_classes, prop_qname)
+                hyper_prop = hyperlink_concept(prop, ns, prefix_map, global_all_classes, prop_qname, current_doc_dir=current_doc_dir)
                 constr_parts = []
                 # Cardinality
                 for card_p, card_label in [(OWL.cardinality, 'exactly'), (OWL.minCardinality, 'min'), (OWL.maxCardinality, 'max')]:
@@ -269,7 +368,7 @@ def class_restrictions(g: Graph, cls: URIRef, ns: str, prefix_map: dict, global_
                 for values_p, values_label in [(OWL.allValuesFrom, 'only'), (OWL.someValuesFrom, 'some')]:
                     values = g.value(restr, values_p)
                     if values:
-                        values_str = get_hyperlinked_class_expression(g, values, ns, prefix_map, global_all_classes)
+                        values_str = get_hyperlinked_class_expression(g, values, ns, prefix_map, global_all_classes, current_doc_dir=current_doc_dir)
                         constr_parts.append(f"{values_label} {values_str}")
                 # hasValue
                 has_value = g.value(restr, OWL.hasValue)
@@ -278,7 +377,7 @@ def class_restrictions(g: Graph, cls: URIRef, ns: str, prefix_map: dict, global_
                         constr_parts.append(f"value '{has_value}'")
                     else:
                         hv_qname = get_qname(has_value, ns, prefix_map)
-                        hyper_hv = hyperlink_concept(has_value, ns, prefix_map, global_all_classes, hv_qname)
+                        hyper_hv = hyperlink_concept(has_value, ns, prefix_map, global_all_classes, hv_qname, current_doc_dir=current_doc_dir)
                         constr_parts.append(f"value {hyper_hv}")
                 if constr_parts:
                     rows.append((hyper_prop, ' '.join(constr_parts)))
@@ -436,29 +535,30 @@ def hyperlink_concept(
     iri = str(uri)
 
     def _prefix_to_site_root() -> str:
-        """
-        MkDocs commonly serves pages as directories (use_directory_urls=true),
-        e.g. `Foo.md` is served at `/Foo/`. In that mode, links from `Foo.md`
-        to other root-level pages must go via `../`.
-        """
         cd = current_doc_dir.strip("/").lower()
-        if cd in ("", "."):
-            return "../"
-        if cd == "properties":
-            return "../../"
-        if cd == "index":
+        if cd in ("", ".", "index"):
             return ""
-        return "../"
+        if cd == "classes":
+            return ""
+        if cd == "properties":
+            return "../"
+        return ""
 
-    # Local class → site URL (directory-style)
+    # Local class → markdown link (MkDocs rewrites to site URL)
     if qname in global_all_classes:
         prefix = _prefix_to_site_root()
-        return f"[{qname}]({prefix}{qname}/)"
+        if current_doc_dir.strip("/").lower() == "properties":
+            return f"[{qname}](../classes/{qname}.md)"
+        if current_doc_dir.strip("/").lower() == "classes":
+            return f"[{qname}]({qname}.md)"
+        return f"[{qname}](classes/{qname}.md)"
 
     # Local property (new)
     if iri.startswith(ns):
         prefix = _prefix_to_site_root()
-        return f"[{qname}]({prefix}properties/{qname}/)"
+        if current_doc_dir.strip("/").lower() == "classes":
+            return f"[{qname}](../properties/{qname}.md)"
+        return f"[{qname}]({prefix}properties/{qname}.md)"
 
     # External known ontologies
     if iri.startswith("https://w3id.org/citydata/") or iri.startswith("https://w3id.org/itsdata/"):
@@ -520,7 +620,7 @@ def parse_concept_registry(script_dir):
 def update_concept_registry(script_dir, registry):
     registry_path = os.path.join(script_dir, "concept_registry.md")
     with open(registry_path, 'w', encoding='utf-8') as f:
-        f.write("![Draft for review only](/assets/img/draft_for_review.svg)\n\n")
+        f.write("![Draft for review only](../../assets/img/draft_for_review.svg)\n\n")
         f.write("# Concept Registry\n\n")
         f.write("This page lists all known concepts (classes and properties) included in the RITSO.\n\n")
         f.write("| base_uri | name | type | description |\n|----------|------|------|-------------|\n")
@@ -533,7 +633,7 @@ def update_concept_registry(script_dir, registry):
             if not base_uri.endswith(('#', '/')):
                 base_uri += '/'
             if not base_uri.startswith('N'):
-                f.write(f"| {base_uri} | {name} | {info['type']} | {info['description']} |\n")
+                f.write(f"| `{base_uri}` | {name} | {info['type']} | {info['description']} |\n")
     log.info(f"Updated concept_registry.md with {len(registry)} entries")
 
 def parse_ontology_registry(script_dir):

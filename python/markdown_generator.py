@@ -7,12 +7,23 @@ from collections import defaultdict
 from rdflib import Graph, URIRef, OWL, RDFS, RDF
 from rdflib.namespace import DCTERMS, SKOS, SH
 from utils import (
-    get_preferred_prefix, get_qname, get_first_literal, get_shacl_name, insert_spaces, class_restrictions, 
-    iter_annotations, DESC_PROPS, get_definition, 
-    get_ontology_for_uri, hyperlink_concept, get_url, get_shacl_constraints, get_pattern_name)
+    get_preferred_prefix, get_qname, get_first_literal, get_shacl_name, insert_spaces, class_restrictions,
+    iter_annotations, DESC_PROPS, get_definition,
+    get_ontology_for_uri, hyperlink_concept, get_url, get_shacl_constraints, get_pattern_name,
+    resolve_home_ontology, should_skip_nav_ontology, get_source_ttl_basename, is_pattern_ttl_file,
+    get_pattern_modules, get_nav_modules,
+)
 from diagram_generator import generate_diagram, get_id
 
 log = logging.getLogger("ttl2mkdocs")
+
+def _pattern_page_relpath(ont_name: str, ontology_info: dict) -> str:
+    """
+    Pattern pages should use the case-sensitive ontology module name (e.g., AreaPattern),
+    and live under docs/classes/ so they behave like other UpperCamelCase pages.
+    """
+    module_name = ontology_info.get(ont_name, {}).get("module_name") or ont_name
+    return f"classes/{module_name}.md"
 
 class SafeMkDocsLoader(yaml.SafeLoader):
     """Custom YAML loader to handle MkDocs-specific python/name tags."""
@@ -67,7 +78,9 @@ def get_used_by(g: Graph, cls: URIRef, global_all_classes: set, ns: str, prefix_
 
 def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: set, ns: str, docs_dir: str, errors: list, prefix_map: dict, ns_to_ontology: dict, class_to_onts: dict, isDraft: bool):
     """Generate Markdown file for a class, including diagram and merged OWL + SHACL formalization."""
-    filename = os.path.join(docs_dir, f"{cls_name}.md")
+    classes_dir = os.path.join(docs_dir, "classes")
+    os.makedirs(classes_dir, exist_ok=True)
+    filename = os.path.join(classes_dir, f"{cls_name}.md")
     log.debug(f"Writing {filename} for class {cls_name}")
 
     title = f"# {cls_name}\n\n"
@@ -111,7 +124,7 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: 
 
 === "PNG"
 
-    ![{cls_name} Diagram](diagrams/{cls_name}.dot.png)
+    ![{cls_name} Diagram](../diagrams/{cls_name}.dot.png)
 
 \n\n"""  
 
@@ -137,27 +150,27 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: 
         log.debug(f"No specializations found for {cls_name}")
     
     # Formalization section with superclasses and disjoints
-    restr_rows = class_restrictions(g, cls, ns, prefix_map, global_all_classes)
+    restr_rows = class_restrictions(g, cls, ns, prefix_map, global_all_classes, current_doc_dir="classes")
     superclasses = []
     disjoints = []    
     # Collect direct superclasses
     for super_cls in g.objects(cls, RDFS.subClassOf):
         if isinstance(super_cls, URIRef) and super_cls != OWL.Thing:
             super_name = get_qname(super_cls, ns, prefix_map)
-            hyper_super = hyperlink_concept(super_cls, ns, prefix_map, global_all_classes, super_name)
+            hyper_super = hyperlink_concept(super_cls, ns, prefix_map, global_all_classes, super_name, current_doc_dir="classes")
             superclasses.append(("subClassOf", hyper_super))
 
     # Collect disjointWith
     for disjoint_cls in g.objects(cls, OWL.disjointWith):
         if isinstance(disjoint_cls, URIRef):
             disjoint_name = get_qname(disjoint_cls, ns, prefix_map)
-            hyper_disjoint = hyperlink_concept(disjoint_cls, ns, prefix_map, global_all_classes, disjoint_name)
+            hyper_disjoint = hyperlink_concept(disjoint_cls, ns, prefix_map, global_all_classes, disjoint_name, current_doc_dir="classes")
             disjoints.append(("disjointWith", hyper_disjoint))    
     
     shacl_rows = []
     shacl_data = get_shacl_constraints(g, cls, ns, prefix_map)
     for prop_name, parts in shacl_data.items():
-        hyper_prop = hyperlink_concept(prop_name, ns, prefix_map, global_all_classes)
+        hyper_prop = hyperlink_concept(prop_name, ns, prefix_map, global_all_classes, current_doc_dir="classes")
         shacl_rows.append((hyper_prop, '; '.join(parts)))
 
     # Combine with restrictions from class_restrictions
@@ -187,7 +200,7 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: 
                 prefix = used_prop.split(':')[0]
                 display_used += f" ({prefix})"
             link = get_url(used_uri, ns, prefix_map, global_all_classes)
-            hyper_prop = hyperlink_concept(prop_uri, ns, prefix_map, global_all_classes, used_prop)
+            hyper_prop = hyperlink_concept(prop_uri, ns, prefix_map, global_all_classes, used_prop, current_doc_dir="classes")
             used_by_md += f"| [{display_used}]({link}) | {hyper_prop} |\n"
         used_by_md += "\n"
     
@@ -199,7 +212,7 @@ def generate_markdown(g: Graph, cls: URIRef, cls_name: str, global_all_classes: 
         other_annot_md += "| Property | Value |\n"
         other_annot_md += "|----------|-------|\n"
         for pred, val in annotations:
-            hyper_pred = hyperlink_concept(pred, ns, prefix_map, global_all_classes, pred)
+            hyper_pred = hyperlink_concept(pred, ns, prefix_map, global_all_classes, pred, current_doc_dir="classes")
             other_annot_md += f"| {hyper_pred} | {val} |\n"
         other_annot_md += "\n"
     
@@ -228,6 +241,35 @@ def get_direct_classes_for_ontology(ont_name: str, ontology_info: dict, class_to
     return sorted(direct, key=str.lower)
 
 
+def _append_concepts_section(
+    content: str,
+    section_title: str,
+    classes: list,
+    properties: list,
+    class_link_prefix: str = "classes/",
+    prop_link_prefix: str = "properties/",
+) -> str:
+    """Append markdown lists of direct classes and properties."""
+    if not classes and not properties:
+        return content
+
+    content += f"\n## {section_title}\n\n"
+    if classes:
+        content += "### Classes\n\n"
+        for cls_name in classes:
+            if cls_name == "ITSThing":
+                continue
+            display_cls = insert_spaces(cls_name)
+            content += f"- [{display_cls}]({class_link_prefix}{cls_name}.md)\n"
+        content += "\n"
+    if properties:
+        content += "### Properties\n\n"
+        for prop_qname in properties:
+            content += f"- [{prop_qname}]({prop_link_prefix}{prop_qname}.md)\n"
+        content += "\n"
+    return content
+
+
 def update_mkdocs_nav(mkdocs_path: str, 
                       global_patterns: dict, 
                       global_all_classes: set, 
@@ -235,7 +277,7 @@ def update_mkdocs_nav(mkdocs_path: str,
                       class_to_onts: defaultdict, 
                       ontology_info: dict, 
                       input_files: list):
-    """Update mkdocs.yml navigation so each pattern only shows its own direct classes."""
+    """Update mkdocs.yml navigation so each pattern shows overview/classes/properties."""
     try:
         with open(mkdocs_path, 'r', encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -246,46 +288,44 @@ def update_mkdocs_nav(mkdocs_path: str,
         raise
 
     new_nav = [{"Home": "index.md"}]
+    pattern_modules = get_pattern_modules(ontology_info)
 
-    ont_names = sorted(ontology_info.keys(), key=str.lower)
-
-    if len(ont_names) > 1:
-        for ont_name in ont_names:
-            if ont_name.endswith('-reqview') or ont_name == ontology_info[ont_name]['prefix']:
-                continue
-
-            # === ONLY direct classes for this pattern ===
-            direct_classes = get_direct_classes_for_ontology(ont_name, ontology_info, class_to_onts)
-
-
-            if ont_name == "core":
-                display_ont = f"{ontology_info[ont_name]['prefix']}:core"
-                ont_nav = [{display_ont: f"core.md"}]
-            else:
-                display_ont = f"{insert_spaces(ont_name)} Pattern"
-                ont_nav = [{display_ont: f"{ont_name}-pattern.md"}]
-
-            for cls_name in direct_classes:
-                if cls_name == 'ITSThing':
+    if not pattern_modules:
+        # Single main TTL (no *-pattern.ttl): flat nav — no Pattern/Overview wrapper
+        class_items = []
+        prop_items = []
+        for ont_name in get_nav_modules(ontology_info):
+            for cls_name in get_direct_classes_for_ontology(ont_name, ontology_info, class_to_onts):
+                if cls_name == "ITSThing":
                     continue
-                display_cls = insert_spaces(cls_name)
-                ont_nav.append({display_cls: f"{cls_name}.md"})
+                class_items.append({insert_spaces(cls_name): f"classes/{cls_name}.md"})
+            for prop_qname in sorted(ontology_info.get(ont_name, {}).get("properties", []) or [], key=str.lower):
+                prop_items.append({prop_qname: f"properties/{prop_qname}.md"})
+        if class_items:
+            new_nav.append({"Classes": class_items})
+        if prop_items:
+            new_nav.append({"Properties": prop_items})
+    else:
+        for ont_name in get_nav_modules(ontology_info):
+            direct_classes = get_direct_classes_for_ontology(ont_name, ontology_info, class_to_onts)
+            display_ont = f"{insert_spaces(ont_name)} Pattern"
+            ont_nav = [{f"{display_ont} Overview": _pattern_page_relpath(ont_name, ontology_info)}]
+
+            class_items = []
+            for cls_name in direct_classes:
+                if cls_name == "ITSThing":
+                    continue
+                class_items.append({insert_spaces(cls_name): f"classes/{cls_name}.md"})
+            if class_items:
+                ont_nav.append({"Classes": class_items})
+
+            prop_items = []
+            for prop_qname in sorted(ontology_info.get(ont_name, {}).get("properties", []) or [], key=str.lower):
+                prop_items.append({prop_qname: f"properties/{prop_qname}.md"})
+            if prop_items:
+                ont_nav.append({"Properties": prop_items})
 
             new_nav.append({display_ont: ont_nav})
-
-    else:
-        # Single ontology case - keep existing logic (or also use direct classes for consistency)
-        ont_name = ont_names[0]
-        ont = ontology_info[ont_name]
-        direct_classes = get_direct_classes_for_ontology(ont_name, ontology_info, class_to_onts)
-
-        for cls_name in direct_classes:
-            if cls_name == 'ITSThing':
-                continue
-            display_cls = insert_spaces(cls_name)
-            if len(class_to_onts[cls_name]) > 1:
-                display_cls += f" ({ont_name})"
-            new_nav.append({display_cls: f"{cls_name}.md"})
 
     config["nav"] = new_nav
 
@@ -303,23 +343,53 @@ def generate_index(g: Graph, ont_name: str, ns: str, prefix_map: dict, ont: dict
     index_path = os.path.join(docs_dir, "index.md")
     index_content = f"# {ont['title']}\n\n"
     preferred_prefix = get_preferred_prefix(g)
+    home_ont_name = resolve_home_ontology(ontology_info, preferred_prefix) or ont_name
     if isDraft:
         index_content += "![Draft for review only](https://isotc204.org/assets/img/draft_for_review.svg)\n\n"
-    ont_names = sorted(ontology_info.keys(), key=str.lower)
-    if len(ont_names) > 1:
+    pattern_modules = get_pattern_modules(ontology_info)
+    if pattern_modules:
+        if ont.get("description"):
+            index_content += ont["description"] + "\n\n"
         index_content += f"The {ont['title']} consists of the following patterns:\n\n"
-        for ont_name in ont_names:
-            if ont_name.endswith('-reqview') or ont_name == preferred_prefix:
-                continue
-            display = insert_spaces(ont_name)
-            link = get_pattern_name(ont_name) + ".md"
+        for pattern_name in pattern_modules:
+            display = insert_spaces(pattern_name)
+            link = _pattern_page_relpath(pattern_name, ontology_info)
             index_content += f"- [{display}]({link})\n"
-    else:
-        ont_name = ont_names[0]
-        ont = ontology_info[ont_name]
-        index_content = generate_pattern_markdown(g, ont_name, ns, prefix_map, ont, docs_dir, class_to_onts, ontology_info)
 
-    filename_ttl = preferred_prefix + ".ttl"
+        # Non-pattern modules (e.g. core.ttl, or the main ontology TTL) with direct concepts
+        for module_name in sorted(ontology_info.keys(), key=str.lower):
+            if module_name.endswith("-reqview") or is_pattern_ttl_file(ontology_info[module_name]):
+                continue
+            module = ontology_info[module_name]
+            direct_classes = get_direct_classes_for_ontology(module_name, ontology_info, class_to_onts)
+            direct_props = sorted(module.get("properties") or [], key=str.lower)
+            if not direct_classes and not direct_props:
+                continue
+            if module_name == home_ont_name:
+                section_title = "Core concepts"
+            else:
+                section_title = module.get("title") or insert_spaces(module_name)
+            index_content = _append_concepts_section(
+                index_content, section_title, direct_classes, direct_props
+            )
+    else:
+        single_name = home_ont_name if home_ont_name in ontology_info else sorted(ontology_info.keys(), key=str.lower)[0]
+        single_ont = ontology_info[single_name]
+        if single_ont.get("description"):
+            index_content += single_ont["description"] + "\n\n"
+        if single_ont.get("imports"):
+            index_content += "This ontology imports the following files:\n\n"
+            for imp_iri in single_ont["imports"]:
+                index_content += f"- [{imp_iri}]({imp_iri})\n"
+            index_content += "\n"
+        direct_classes = get_direct_classes_for_ontology(single_name, ontology_info, class_to_onts)
+        direct_props = sorted(single_ont.get("properties") or [], key=str.lower)
+        index_content = _append_concepts_section(
+            index_content, "Ontology concepts", direct_classes, direct_props
+        )
+
+    home_ont = ontology_info.get(home_ont_name, ont)
+    filename_ttl = get_source_ttl_basename(home_ont_name, home_ont)
     index_content += f"\nThe formal definition of this ontology is available in [TURTLE Syntax]({filename_ttl}).\n"
 
     # Write file
@@ -333,50 +403,85 @@ def generate_index(g: Graph, ont_name: str, ns: str, prefix_map: dict, ont: dict
         log.error(error_msg)
         raise
 
-def generate_pattern_markdown(g: Graph, ont_name: str, ns: str, prefix_map: dict, ont: dict, docs_dir: str, class_to_onts: defaultdict, ontology_info: dict):
-    """Generate the per-pattern Markdown page, now including imported patterns."""
-    title = "# " + ont["title"] + "\n\n" 
+def generate_pattern_markdown(
+    g: Graph,
+    ont_name: str,
+    ns: str,
+    prefix_map: dict,
+    ont: dict,
+    docs_dir: str,
+    class_to_onts: defaultdict,
+    ontology_info: dict,
+    *,
+    for_index: bool = False,
+):
+    """Generate pattern overview markdown (under docs/classes/ unless for_index)."""
+    title = "# " + ont["title"] + "\n\n"
     desc = ont["description"] or ""
     top_desc = f"{desc}\n\n" if desc else ""
 
-    # === Imports section ===
     imports_md = ""
     if ont.get("imports"):
-        imports_md = "This pattern imports the following files:\n\n"
+        label = "This ontology imports" if for_index else "This pattern imports"
+        imports_md = f"{label} the following files:\n\n"
         for imp_iri in ont["imports"]:
             imports_md += f"- [{imp_iri}]({imp_iri})\n"
-        
         imports_md += "\n"
 
-    # === Class section ===
-    members_md = "This pattern consists of the following classes:\n\n"
     direct_classes = get_direct_classes_for_ontology(ont_name, ontology_info, class_to_onts)
+    direct_props = sorted(ont.get("properties") or [], key=str.lower)
 
-    i = 0
-    for cls_name in direct_classes:
-        if cls_name == 'ITSThing':
-            continue
-        display_cls = insert_spaces(cls_name)
-        members_md += f"- [{display_cls}]({cls_name}.md)\n"
-        i = i + 1
-    if i == 0:
-        members_md = "This pattern does not contain any classes.\n"
-    owl_ttl = get_pattern_name(ont_name) + ".ttl"
-    shacl_ttl = get_shacl_name(ont_name) + ".ttl"
-    if ont_name == "core":
-        formal = f"\nThe formal definition of this pattern is available in [TURTLE Syntax]({owl_ttl}).\n"
+    if for_index:
+        body = ""
+        if direct_classes or direct_props:
+            body = _append_concepts_section(body, "Ontology concepts", direct_classes, direct_props)
+        elif not direct_classes:
+            body = "This ontology does not declare any classes or properties.\n\n"
     else:
-        formal = f"\nThe formal definition of this pattern is available in TURTLE Syntax in two files, the [core semantics]({owl_ttl}) and the SHACL [restrictions]({shacl_ttl}).\n"
-    content = title + top_desc + imports_md + members_md + formal
-    return content
+        members_md = "This pattern consists of the following classes:\n\n"
+        i = 0
+        for cls_name in direct_classes:
+            if cls_name == "ITSThing":
+                continue
+            display_cls = insert_spaces(cls_name)
+            members_md += f"- [{display_cls}]({cls_name}.md)\n"
+            i += 1
+        if i == 0:
+            members_md = "This pattern does not contain any classes.\n"
+
+        props_md = ""
+        if direct_props:
+            props_md = "This module defines the following properties:\n\n"
+            for prop_qname in direct_props:
+                props_md += f"- [{prop_qname}](../properties/{prop_qname}.md)\n"
+            props_md += "\n"
+        body = members_md + props_md
+
+    owl_ttl = get_source_ttl_basename(ont_name, ont)
+    shacl_ttl = get_shacl_name(ont_name) + ".ttl"
+    shacl_path = os.path.join(docs_dir, shacl_ttl)
+    ttl_prefix = "" if for_index else "../"
+    if os.path.exists(shacl_path):
+        formal = (
+            f"\nThe formal definition of this pattern is available in TURTLE Syntax in two files, "
+            f"the [core semantics]({ttl_prefix}{owl_ttl}) and the SHACL "
+            f"[restrictions]({ttl_prefix}{shacl_ttl}).\n"
+        )
+    else:
+        label = "ontology" if for_index else "pattern"
+        formal = f"\nThe formal definition of this {label} is available in [TURTLE Syntax]({ttl_prefix}{owl_ttl}).\n"
+
+    if for_index:
+        return top_desc + imports_md + body + formal
+    return title + top_desc + imports_md + body + formal
 
 def generate_pattern_markdown_file(g: Graph, ont_name: str, ns: str, prefix_map: dict, ont: dict, docs_dir: str, class_to_onts: defaultdict, ontology_info: dict):
     """Generate the per-pattern Markdown page, now including imported patterns."""
     content = generate_pattern_markdown(g, ont_name, ns, prefix_map, ont, docs_dir, class_to_onts, ontology_info)
-    if ont_name == "core":
-        filename = os.path.join(docs_dir, f"{ont_name}.md")
-    else:
-        filename = os.path.join(docs_dir, f"{ont_name}-pattern.md")
+    classes_dir = os.path.join(docs_dir, "classes")
+    os.makedirs(classes_dir, exist_ok=True)
+    module_name = ontology_info.get(ont_name, {}).get("module_name") or ont_name
+    filename = os.path.join(classes_dir, f"{module_name}.md")
     with open(filename, "w", encoding="utf-8") as f:
         if ontology_info[ont_name].get("draft"):
             f.write("![Draft for review only](https://isotc204.org/assets/img/draft_for_review.svg)\n\n")
